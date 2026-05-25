@@ -186,7 +186,7 @@ class RefugeeService:
                     json=payload,
                     headers={
                         "Content-Type": "application/json",
-                        "Authorization": f"Bearer {token}",
+                        "Authorisation": f"JWT {token}",
                         "User-Agent": "Middleware-API-Gateway/1.0.0",
                     },
                 )
