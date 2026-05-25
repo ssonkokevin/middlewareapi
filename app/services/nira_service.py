@@ -54,12 +54,14 @@ class NiraService:
 
         # Created timestamp in EAT with millisecond precision
         now = datetime.now(_EAT)
-        created: str = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}+03:00"
+        ms = f"{now.microsecond // 1000:03d}"
+        created: str = now.strftime("%Y-%m-%dT%H:%M:%S.") + ms + "+03:00"       # for <wsse:Created> XML element
+        created_for_digest: str = now.strftime("%Y-%m-%dT%H:%M:%S.") + ms + "+0300"  # no colon per NIRA spec NB
 
         # PasswordDigest = Base64( SHA1( nonce + created + SHA1(password) ) )
-        # Per NIRA spec NB: pre-hash password first, then concatenate as bytes
+        # Per NIRA spec NB: pre-hash password first; use +0300 (no colon) in digest
         sha1_password: bytes = hashlib.sha1(password.encode("utf-8")).digest()
-        created_bytes: bytes = created.encode("utf-8")
+        created_bytes: bytes = created_for_digest.encode("utf-8")
         raw_digest: bytes = hashlib.sha1(nonce_bytes + created_bytes + sha1_password).digest()
 
         nonce_b64: str = base64.b64encode(nonce_bytes).decode("utf-8")
