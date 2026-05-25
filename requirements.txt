@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+httpx
+python-dotenv
+lxml
+pydantic
+pydantic-settings
+redis
+python-jose[cryptography]
