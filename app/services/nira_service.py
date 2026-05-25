@@ -47,7 +47,7 @@ class NiraService:
         Returns a dict with three keys:
             nonce_b64   – Base64-encoded random nonce (16 bytes)
             created     – ISO-8601 timestamp in EAT (e.g. 2026-05-19T15:22:05.765+03:00)
-            digest      – Base64( SHA1( nonce_bytes + created_utf8 + password_utf8 ) )
+            digest      – Base64( SHA1( nonce_bytes + created_utf8 + SHA1(password) ) )
         """
         # 16 cryptographically random bytes, new for every call
         nonce_bytes: bytes = secrets.token_bytes(16)
@@ -56,10 +56,11 @@ class NiraService:
         now = datetime.now(_EAT)
         created: str = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}+03:00"
 
-        # PasswordDigest = Base64( SHA1( nonce + created + password ) )
-        password_bytes: bytes = password.encode("utf-8")
+        # PasswordDigest = Base64( SHA1( nonce + created + SHA1(password) ) )
+        # Per NIRA spec NB: pre-hash password first, then concatenate as bytes
+        sha1_password: bytes = hashlib.sha1(password.encode("utf-8")).digest()
         created_bytes: bytes = created.encode("utf-8")
-        raw_digest: bytes = hashlib.sha1(nonce_bytes + created_bytes + password_bytes).digest()
+        raw_digest: bytes = hashlib.sha1(nonce_bytes + created_bytes + sha1_password).digest()
 
         nonce_b64: str = base64.b64encode(nonce_bytes).decode("utf-8")
         digest_b64: str = base64.b64encode(raw_digest).decode("utf-8")
