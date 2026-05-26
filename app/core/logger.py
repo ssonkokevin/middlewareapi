@@ -1,12 +1,15 @@
 """
 Logging configuration for the middleware API gateway.
 Provides structured JSON logging for all requests, responses, and external API calls.
+Includes daily rotating file logs for persistent storage.
 """
 
 import logging
 import json
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from logging.handlers import TimedRotatingFileHandler
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -96,7 +99,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 
 def setup_logging(debug: bool = False) -> None:
-    """Configure root logger with JSON output. Call once at startup."""
+    """Configure root logger with JSON output to both console and daily rotating files."""
     log_level = logging.DEBUG if debug else logging.INFO
 
     root_logger = logging.getLogger()
@@ -106,10 +109,27 @@ def setup_logging(debug: bool = False) -> None:
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
+    # Console handler for development/monitoring
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
     console_handler.setFormatter(JSONFormatter())
     root_logger.addHandler(console_handler)
+
+    # Daily rotating file handler for persistent logs
+    logs_dir = os.path.join(os.getcwd(), "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    file_handler = TimedRotatingFileHandler(
+        filename=os.path.join(logs_dir, "middleware.log"),
+        when="midnight",
+        interval=1,
+        backupCount=30,  # Keep 30 days of logs
+        encoding="utf-8"
+    )
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(JSONFormatter())
+    file_handler.suffix = "%Y-%m-%d"  # Daily files: middleware.log.2026-05-26
+    root_logger.addHandler(file_handler)
 
     # Quieten noisy third-party loggers
     logging.getLogger("httpx").setLevel(logging.WARNING)

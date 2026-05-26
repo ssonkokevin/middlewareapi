@@ -29,6 +29,8 @@ ENV/
 # Logs
 *.log
 logs/
+middleware.log*
+middleware.log.*
 
 # Certificates
 wwwroot/certificates/
