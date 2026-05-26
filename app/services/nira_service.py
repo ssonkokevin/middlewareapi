@@ -243,17 +243,6 @@ xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-s
         """
         start_time = datetime.now(_EAT)
 
-        logger.info(
-            "Calling NIRA SOAP endpoint",
-            extra={
-                "service": "nira",
-                "environment": environment,
-                "url": url,
-                "nationalId": national_id,
-                "dateOfBirth": date_of_birth,
-            },
-        )
-
         soap_body = self._build_soap_envelope(
             national_id=national_id,
             date_of_birth=date_of_birth,
@@ -264,6 +253,12 @@ xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-s
             username=username,
             password=password,
         )
+
+        # Extract token for logging
+        token = self._make_security_header(password)
+        logger.info(f"Current Date: {datetime.now(_EAT).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}+03:00")
+        logger.info(f"PasswordDigest: {token['digest']}")
+        logger.info(f"Verify person Request(NIRA):{soap_body}")
 
         headers = {
             "Content-Type": "text/xml; charset=utf-8",
@@ -301,18 +296,11 @@ xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-s
 
             parsed = self._parse_response(response.text)
 
-            logger.info(
-                "NIRA verification completed",
-                extra={
-                    "service": "nira",
-                    "environment": environment,
-                    "nationalId": national_id,
-                    "transaction_status": parsed["transaction_status"],
-                    "matching_status": parsed["matching_status"],
-                    "card_status": parsed["card_status"],
-                    "duration_ms": duration_ms,
-                },
-            )
+            logger.info(f"Verify PersonResponse(NIRA):{response.text}")
+            logger.info(f"Transaction Status{parsed['transaction_status']}")
+            logger.info(f"PasswordDaysLeft{parsed['password_days_left']}")
+            logger.info(f"ExecutionCost{parsed['execution_cost']}")
+            logger.info(f"CardStatus{parsed['card_status']}")
 
             return parsed
 

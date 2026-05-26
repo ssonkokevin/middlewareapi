@@ -17,39 +17,29 @@ from starlette.middleware.base import BaseHTTPMiddleware
 _EAT = timezone(timedelta(hours=3))
 
 
-class JSONFormatter(logging.Formatter):
-    """Emits every log record as a single-line JSON object."""
-
-    # Fields added by the logging machinery that we do not want to repeat
-    _SKIP = frozenset({
-        "args", "created", "exc_info", "exc_text", "filename",
-        "levelno", "lineno", "message", "module", "msecs",
-        "msg", "name", "pathname", "process", "processName",
-        "relativeCreated", "stack_info", "taskName", "thread", "threadName",
-    })
-
+class TextFormatter(logging.Formatter):
+    """Emits logs in the format: 2026-05-26 10:28:34.228 +03:00 [INF] message"""
+    
+    LEVEL_MAP = {
+        "DEBUG": "DBG",
+        "INFO": "INF",
+        "WARNING": "WRN",
+        "ERROR": "ERR",
+        "CRITICAL": "CRT"
+    }
+    
     def format(self, record: logging.LogRecord) -> str:
-        record.getMessage()  # merges args into msg
-
-        log_entry = {
-            "timestamp": datetime.now(_EAT).strftime("%Y-%m-%dT%H:%M:%S.") +
-                         f"{datetime.now(_EAT).microsecond // 1000:03d}+03:00",
-            "level": record.levelname,
-            "message": record.getMessage(),
-            "module": record.module,
-            "function": record.funcName,
-            "line": record.lineno,
-        }
-
-        # Attach any extra= fields passed by the caller
-        for key, value in record.__dict__.items():
-            if key not in self._SKIP and not key.startswith("_"):
-                log_entry[key] = value
-
-        if record.exc_info:
-            log_entry["exception"] = self.formatException(record.exc_info)
-
-        return json.dumps(log_entry, default=str)
+        # Get timestamp with milliseconds
+        now = datetime.now(_EAT)
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S.") + f"{now.microsecond // 1000:03d} +03:00"
+        
+        # Map level to 3-letter abbreviation
+        level_abbr = self.LEVEL_MAP.get(record.levelname, record.levelname[:3])
+        
+        # Get the message
+        message = record.getMessage()
+        
+        return f"{timestamp} [{level_abbr}] {message}"
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -68,38 +58,21 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         elif request.client is not None:
             client_ip = request.client.host
 
-        logger.info(
-            "Incoming request",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "client_ip": client_ip,
-                "user_agent": request.headers.get("user-agent", ""),
-            },
-        )
+        logger.info(f"HTTP {request.method} {request.url.path}")
 
         response = await call_next(request)
 
         duration_ms = round(
-            (datetime.now(_EAT) - start_time).total_seconds() * 1000, 2
+            (datetime.now(_EAT) - start_time).total_seconds() * 1000, 4
         )
 
-        logger.info(
-            "Request completed",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": duration_ms,
-                "client_ip": client_ip,
-            },
-        )
+        logger.info(f"HTTP {request.method} {request.url.path} responded {response.status_code} in {duration_ms} ms")
 
         return response
 
 
 def setup_logging(debug: bool = False) -> None:
-    """Configure root logger with JSON output to both console and daily rotating files."""
+    """Configure root logger with text output to both console and daily rotating files."""
     log_level = logging.DEBUG if debug else logging.INFO
 
     root_logger = logging.getLogger()
@@ -112,7 +85,7 @@ def setup_logging(debug: bool = False) -> None:
     # Console handler for development/monitoring
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
-    console_handler.setFormatter(JSONFormatter())
+    console_handler.setFormatter(TextFormatter())
     root_logger.addHandler(console_handler)
 
     # Daily rotating file handler for persistent logs
@@ -127,7 +100,7 @@ def setup_logging(debug: bool = False) -> None:
         encoding="utf-8"
     )
     file_handler.setLevel(log_level)
-    file_handler.setFormatter(JSONFormatter())
+    file_handler.setFormatter(TextFormatter())
     file_handler.suffix = "%Y-%m-%d"  # Daily files: middleware.log.2026-05-26
     root_logger.addHandler(file_handler)
 
