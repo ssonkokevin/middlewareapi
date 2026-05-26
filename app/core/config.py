@@ -119,10 +119,17 @@ class Settings(BaseSettings):
         Returns:
             List of client dicts with client_id, client_secret, client_name, allowed_env
         """
+        import logging
+        logger = logging.getLogger("middleware")
+        
         clients = []
         # Check both os.environ (system env) and model_extra (.env file fields)
         all_env_vars = dict(os.environ)
         all_env_vars.update(getattr(self, 'model_extra', {}) or {})
+        
+        logger.info(f"DEBUG: Total environment variables found: {len(all_env_vars)}")
+        client_vars = [k for k in all_env_vars.keys() if k.startswith("CLIENT_")]
+        logger.info(f"DEBUG: CLIENT_ variables found: {client_vars}")
 
         for key in all_env_vars:
             if key.startswith("CLIENT_") and key.endswith("_ID"):
@@ -133,20 +140,28 @@ class Settings(BaseSettings):
 
                 client_id = all_env_vars.get(key, "")
                 client_secret = all_env_vars.get(secret_key, "")
+                
+                logger.info(f"DEBUG: Found client - ID key: {key}, Secret key: {secret_key}")
+                logger.info(f"DEBUG: Values - ID: {client_id}, Secret: {client_secret[:10] if client_secret else 'None'}...")
 
                 if client_id and client_secret:
                     # Extract readable name from prefix (e.g., CLIENT_KYC_PROD -> kyc_prod)
                     name_prefix = prefix[7:] if prefix.startswith("CLIENT_") else prefix
                     client_name = all_env_vars.get(name_key, name_prefix.replace("_", " ").title())
                     allowed_env = all_env_vars.get(env_key, "both")
-
-                    clients.append({
+                    
+                    client_data = {
                         "client_id": client_id,
                         "client_secret": client_secret,
                         "client_name": client_name,
                         "allowed_env": allowed_env,
-                    })
+                    }
+                    clients.append(client_data)
+                    logger.info(f"DEBUG: Added client: {client_data}")
+                else:
+                    logger.info(f"DEBUG: Skipped client - missing ID or secret")
 
+        logger.info(f"DEBUG: Returning {len(clients)} clients")
         return clients
 
 

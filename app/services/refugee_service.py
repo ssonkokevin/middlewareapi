@@ -137,7 +137,7 @@ class RefugeeService:
         """
         start_time = datetime.now(_EAT)
 
-        logger.info(f"Verify Refugee Request(UCC):{{\"individualId\":\"{individual_id}\",\"sex\":\"{sex}\",\"yearOfBirth\":{year_of_birth},\"fingerprint\":\"{fingerprint}\"}}")
+        logger.info(f"Verify Refugee Request(UCC): individualId={individual_id}, sex={sex}, yearOfBirth={year_of_birth}")
 
         try:
             async with httpx.AsyncClient(timeout=settings.TIMEOUT) as client:
@@ -188,7 +188,7 @@ class RefugeeService:
             except Exception:
                 raise Exception("UCC validate returned non-JSON response")
 
-            logger.info(f"Verify Refugee Response(UCC):{result}")
+            logger.info(f"Verify Refugee Response(UCC): result={result}")
 
             return result
 
@@ -196,32 +196,14 @@ class RefugeeService:
             duration_ms = round(
                 (datetime.now(_EAT) - start_time).total_seconds() * 1000, 2
             )
-            logger.error(
-                "UCC request timed out",
-                extra={
-                    "service": "refugee",
-                    "environment": environment,
-                    "individualId": individual_id,
-                    "timeout_s": settings.TIMEOUT,
-                    "duration_ms": duration_ms,
-                },
-            )
+            logger.error(f"UCC request failed: {str(e)}")
             raise Exception(f"UCC timed out after {settings.TIMEOUT} seconds")
 
         except httpx.RequestError as exc:
             duration_ms = round(
                 (datetime.now(_EAT) - start_time).total_seconds() * 1000, 2
             )
-            logger.error(
-                "UCC connection error",
-                extra={
-                    "service": "refugee",
-                    "environment": environment,
-                    "individualId": individual_id,
-                    "error": str(exc),
-                    "duration_ms": duration_ms,
-                },
-            )
+            logger.error(f"UCC request failed: {str(exc)}")
             raise Exception(f"UCC connection error: {exc}")
 
         except Exception:

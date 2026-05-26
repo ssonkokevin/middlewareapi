@@ -89,17 +89,7 @@ class AuthService:
         key = f"token:{jti}"
         await redis_conn.setex(key, TOKEN_TTL_SECONDS, client_id)
 
-        logger.info(
-            f"Token created for client: {client_name}, env: {allowed_env}, jti: {jti[:8]}...",
-            extra={
-                "service": "auth",
-                "action": "token_created",
-                "client_id": client_id,
-                "client_name": client_name,
-                "allowed_env": allowed_env,
-                "jti_prefix": jti[:8],
-            },
-        )
+        logger.info(f"Token issued for client: {client_name}")
 
         return token
 
@@ -125,17 +115,11 @@ class AuthService:
             jti = unverified.get("jti")
             token_env = unverified.get("env", "both")
         except JWTError as e:
-            logger.warning(
-                f"Token decode failed: {str(e)}",
-                extra={"service": "auth", "action": "token_verify_failed", "reason": "decode_error"},
-            )
+            logger.warning(f"Token rejected: decode failed")
             raise ValueError("Invalid token format")
 
         if not client_id or not jti:
-            logger.warning(
-                "Token missing required claims (sub or jti)",
-                extra={"service": "auth", "action": "token_verify_failed", "reason": "missing_claims"},
-            )
+            logger.warning(f"Token rejected: missing claims")
             raise ValueError("Invalid token claims")
 
         # Verify token exists in Redis (not already used/deleted)
@@ -144,16 +128,7 @@ class AuthService:
         stored_client_id = await redis_conn.get(key)
 
         if stored_client_id is None:
-            logger.warning(
-                f"Token not found in Redis (already used or expired), jti: {jti[:8]}...",
-                extra={
-                    "service": "auth",
-                    "action": "token_verify_failed",
-                    "reason": "token_not_found",
-                    "jti_prefix": jti[:8],
-                    "client_id": client_id,
-                },
-            )
+            logger.warning(f"Token rejected: already used or expired")
             raise ValueError("Token has already been used or has expired")
 
         # Now verify signature
@@ -161,45 +136,15 @@ class AuthService:
         try:
             payload = jwt.decode(token, secret, algorithms=["HS256"])
         except JWTError as e:
-            logger.warning(
-                f"Token signature verification failed, jti: {jti[:8]}...",
-                extra={
-                    "service": "auth",
-                    "action": "token_verify_failed",
-                    "reason": "signature_invalid",
-                    "jti_prefix": jti[:8],
-                    "client_id": client_id,
-                },
-            )
+            logger.warning(f"Token rejected: invalid signature")
             raise ValueError("Invalid token signature")
 
         # Check environment authorization
         if token_env != "both" and token_env != required_env:
-            logger.warning(
-                f"Token env mismatch: token={token_env}, required={required_env}, jti: {jti[:8]}...",
-                extra={
-                    "service": "auth",
-                    "action": "token_verify_failed",
-                    "reason": "env_mismatch",
-                    "token_env": token_env,
-                    "required_env": required_env,
-                    "jti_prefix": jti[:8],
-                    "client_id": client_id,
-                },
-            )
+            logger.warning(f"Token rejected: environment not authorized")
             raise ValueError(f"Token not authorized for {required_env} environment")
 
-        logger.info(
-            f"Token verified successfully, jti: {jti[:8]}...",
-            extra={
-                "service": "auth",
-                "action": "token_verified",
-                "jti_prefix": jti[:8],
-                "client_id": client_id,
-                "client_name": payload.get("name"),
-                "env": required_env,
-            },
-        )
+        logger.info(f"Token verified for client: {client_id}")
 
         return payload
 
@@ -214,15 +159,7 @@ class AuthService:
         redis_conn = await self._get_redis()
         key = f"token:{jti}"
         await redis_conn.delete(key)
-        logger.info(
-            f"Token permanently deleted, jti: {jti[:8]}...",
-            extra={
-                "service": "auth",
-                "action": "token_deleted",
-                "jti_prefix": jti[:8],
-                "reason": "verification_completed",
-            },
-        )
+        logger.info(f"Token deleted: jti={jti[:8]}...")
 
 
 # Application-wide singleton

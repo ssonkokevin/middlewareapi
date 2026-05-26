@@ -69,10 +69,7 @@ def is_ip_in_subnet(client_ip: str, subnet: str) -> bool:
         address = ipaddress.ip_address(client_ip)
         return address in network
     except ValueError as exc:
-        logger.warning(
-            "Invalid IP or subnet in whitelist config",
-            extra={"client_ip": client_ip, "subnet": subnet, "error": str(exc)},
-        )
+        logger.warning(f"Invalid IP or subnet in whitelist config: {subnet}")
         return False
 
 
@@ -94,16 +91,7 @@ def _deny(client_ip: str, environment: str, service: str, path: str) -> None:
     Log a DENIED result and raise HTTP 403 with a structured detail dict.
     The detail dict is returned as-is by the global HTTPException handler.
     """
-    logger.warning(
-        f"{service.upper()} {environment.upper()} access DENIED for IP: {client_ip}",
-        extra={
-            "service": service,
-            "environment": environment,
-            "client_ip": client_ip,
-            "result": "DENIED",
-            "path": path,
-        },
-    )
+    logger.warning(f"IP check DENIED: {client_ip} not authorised for {path}")
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail={
@@ -128,14 +116,7 @@ def validate_nira_prod_ip(request: Request) -> bool:
     allowed   = settings.NIRA_PROD_ALLOWED_IP
 
     if is_ip_in_subnet(client_ip, allowed):
-        logger.info(
-            f"NIRA PROD access GRANTED for IP: {client_ip}",
-            extra={
-                "service": "nira", "environment": "production",
-                "client_ip": client_ip, "expected_ip": allowed,
-                "result": "GRANTED", "path": request.url.path,
-            },
-        )
+        logger.info(f"IP check GRANTED: {client_ip} → /api/nira/prod/verify")
         return True
 
     _deny(client_ip, "production", "nira", "/api/nira/prod/verify")
@@ -152,14 +133,7 @@ def validate_nira_test_ip(request: Request) -> bool:
     allowed   = settings.NIRA_TEST_ALLOWED_IP
 
     if is_ip_in_subnet(client_ip, allowed):
-        logger.info(
-            f"NIRA TEST access GRANTED for IP: {client_ip}",
-            extra={
-                "service": "nira", "environment": "test",
-                "client_ip": client_ip, "expected_ip": allowed,
-                "result": "GRANTED", "path": request.url.path,
-            },
-        )
+        logger.info(f"IP check GRANTED: {client_ip} → /api/nira/test/verify")
         return True
 
     _deny(client_ip, "test", "nira", "/api/nira/test/verify")
@@ -176,14 +150,7 @@ def validate_refugee_prod_ip(request: Request) -> bool:
     allowed   = settings.REFUGEE_PROD_ALLOWED_IP
 
     if is_ip_in_subnet(client_ip, allowed):
-        logger.info(
-            f"REFUGEE PROD access GRANTED for IP: {client_ip}",
-            extra={
-                "service": "refugee", "environment": "production",
-                "client_ip": client_ip, "expected_ip": allowed,
-                "result": "GRANTED", "path": request.url.path,
-            },
-        )
+        logger.info(f"IP check GRANTED: {client_ip} → /api/refugee/prod/verify")
         return True
 
     _deny(client_ip, "production", "refugee", "/api/refugee/prod/verify")
@@ -200,14 +167,7 @@ def validate_refugee_test_ip(request: Request) -> bool:
     allowed   = settings.REFUGEE_TEST_ALLOWED_IP
 
     if is_ip_in_subnet(client_ip, allowed):
-        logger.info(
-            f"REFUGEE TEST access GRANTED for IP: {client_ip}",
-            extra={
-                "service": "refugee", "environment": "test",
-                "client_ip": client_ip, "expected_ip": allowed,
-                "result": "GRANTED", "path": request.url.path,
-            },
-        )
+        logger.info(f"IP check GRANTED: {client_ip} → /api/refugee/test/verify")
         return True
 
     _deny(client_ip, "test", "refugee", "/api/refugee/test/verify")

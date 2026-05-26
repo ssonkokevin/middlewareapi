@@ -26,20 +26,21 @@ Notes:
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.core.logger import setup_logging, LoggingMiddleware
+from app.core.logger import setup_logging
 from app.api.routes import nira, refugee, admin, auth
 
 _EAT = timezone(timedelta(hours=3))
 
 
-# Initialise structured JSON logging before anything else runs
-setup_logging(debug=settings.DEBUG)
+# Initialise logging before anything else runs
+setup_logging()
 logger = logging.getLogger("middleware")
 
 
@@ -86,7 +87,31 @@ app.add_middleware(
 )
 
 # Request/response logging middleware
-app.add_middleware(LoggingMiddleware)
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    duration_ms = (time.time() - start_time) * 1000
+    
+    msg = (
+        f"HTTP {request.method} {request.url.path} "
+        f"responded {response.status_code} "
+        f"in {duration_ms:.4f} ms"
+    )
+    
+    client_ip = request.headers.get("X-Forwarded-For", 
+                request.client.host if request.client else "unknown")
+    
+    if response.status_code >= 400:
+        logger.warning(
+            f"HTTP {response.status_code} {request.method} "
+            f"{request.url.path} | IP={client_ip} | "
+            f"Duration={duration_ms:.0f}ms"
+        )
+    else:
+        logger.info(msg)
+    
+    return response
 
 # Register API routers
 # Auth router (no prefix — provides POST /auth/token)
@@ -190,7 +215,7 @@ if __name__ == "__main__":
         "app.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=settings.DEBUG,
+        reload=True,
+        reload_dirs=["app"],        # watch ONLY the app/ folder
         timeout_keep_alive=60,
-        log_level="debug" if settings.DEBUG else "info",
     )

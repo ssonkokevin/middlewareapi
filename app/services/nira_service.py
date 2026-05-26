@@ -254,11 +254,7 @@ xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-s
             password=password,
         )
 
-        # Extract token for logging
-        token = self._make_security_header(password)
-        logger.info(f"Current Date: {datetime.now(_EAT).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]}+03:00")
-        logger.info(f"PasswordDigest: {token['digest']}")
-        logger.info(f"Verify person Request(NIRA):{soap_body}")
+        logger.info(f"Verify person Request(NIRA): nationalId={national_id}, env={environment}")
 
         headers = {
             "Content-Type": "text/xml; charset=utf-8",
@@ -278,16 +274,7 @@ xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-s
                 (datetime.now(_EAT) - start_time).total_seconds() * 1000, 2
             )
 
-            logger.info(
-                "NIRA HTTP response received",
-                extra={
-                    "service": "nira",
-                    "environment": environment,
-                    "status_code": response.status_code,
-                    "duration_ms": duration_ms,
-                    "nationalId": national_id,
-                },
-            )
+            # Response will be logged below with actual content
 
             if response.status_code != 200:
                 raise Exception(
@@ -296,11 +283,7 @@ xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-s
 
             parsed = self._parse_response(response.text)
 
-            logger.info(f"Verify PersonResponse(NIRA):{response.text}")
-            logger.info(f"Transaction Status{parsed['transaction_status']}")
-            logger.info(f"PasswordDaysLeft{parsed['password_days_left']}")
-            logger.info(f"ExecutionCost{parsed['execution_cost']}")
-            logger.info(f"CardStatus{parsed['card_status']}")
+            logger.info(f"Verify person Response(NIRA): status={parsed['transaction_status']}, card={parsed['card_status']}")
 
             return parsed
 
@@ -308,32 +291,14 @@ xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-s
             duration_ms = round(
                 (datetime.now(_EAT) - start_time).total_seconds() * 1000, 2
             )
-            logger.error(
-                "NIRA request timed out",
-                extra={
-                    "service": "nira",
-                    "environment": environment,
-                    "nationalId": national_id,
-                    "timeout_s": 30,
-                    "duration_ms": duration_ms,
-                },
-            )
+            logger.error(f"NIRA request failed: timeout")
             raise Exception("NIRA timed out after 30 seconds")
 
         except httpx.RequestError as exc:
             duration_ms = round(
                 (datetime.now(_EAT) - start_time).total_seconds() * 1000, 2
             )
-            logger.error(
-                "NIRA connection error",
-                extra={
-                    "service": "nira",
-                    "environment": environment,
-                    "nationalId": national_id,
-                    "error": str(exc),
-                    "duration_ms": duration_ms,
-                },
-            )
+            logger.error(f"NIRA request failed: {str(exc)}")
             raise Exception(f"NIRA connection error: {exc}")
 
         except ET.ParseError as exc:

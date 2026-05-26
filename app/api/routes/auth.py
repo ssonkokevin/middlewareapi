@@ -78,16 +78,29 @@ async def get_token(body: TokenRequest) -> Dict[str, Any]:
     Validates client credentials and issues a single-use JWT token.
     Token is deleted immediately after any verification attempt.
     """
-    # Find client in registered clients
+    # Debug: Log all loaded clients
     clients = settings.get_all_clients()
+    logger.info(f"DEBUG: Loaded {len(clients)} clients from environment")
+    for i, client in enumerate(clients):
+        logger.info(f"DEBUG: Client {i+1}: ID={client['client_id']}, Secret={client['client_secret'][:10]}...")
+    
+    # Debug: Log incoming request
+    logger.info(f"DEBUG: Token request for client_id: {body.client_id}")
+    logger.info(f"DEBUG: Request client_secret: {body.client_secret[:10]}...")
+    
     matching_client = None
 
     for client in clients:
+        logger.info(f"DEBUG: Comparing with client ID: {client['client_id']}")
         if client["client_id"] == body.client_id:
+            logger.info(f"DEBUG: Client ID match found, comparing secrets...")
             # Constant-time comparison for secret
             if hmac.compare_digest(client["client_secret"], body.client_secret):
+                logger.info(f"DEBUG: Secret match successful!")
                 matching_client = client
                 break
+            else:
+                logger.info(f"DEBUG: Secret mismatch - stored: {client['client_secret'][:10]}... vs request: {body.client_secret[:10]}...")
 
     if matching_client is None:
         logger.warning(
