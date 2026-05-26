@@ -137,19 +137,7 @@ class RefugeeService:
         """
         start_time = datetime.now(_EAT)
 
-        # Log with fingerprint size only — never log the actual biometric data
-        fingerprint_chars = len(fingerprint)
-        logger.info(
-            "Starting UCC refugee verification",
-            extra={
-                "service": "refugee",
-                "environment": environment,
-                "individualId": individual_id,
-                "sex": sex,
-                "yearOfBirth": year_of_birth,
-                "fingerprint": f"[PRESENT, {fingerprint_chars} chars]",
-            },
-        )
+        logger.info(f"Verify Refugee Request(UCC):{{\"individualId\":\"{individual_id}\",\"sex\":\"{sex}\",\"yearOfBirth\":{year_of_birth},\"fingerprint\":\"{fingerprint}\"}}")
 
         try:
             async with httpx.AsyncClient(timeout=settings.TIMEOUT) as client:
@@ -171,15 +159,7 @@ class RefugeeService:
                     "fingerprint": fingerprint,
                 }
 
-                logger.info(
-                    "Posting to UCC validate endpoint",
-                    extra={
-                        "service": "refugee",
-                        "environment": environment,
-                        "url": validate_url,
-                        "individualId": individual_id,
-                    },
-                )
+                # Request already logged above with full payload
 
                 validate_response = await client.post(
                     validate_url,
@@ -195,16 +175,7 @@ class RefugeeService:
                 (datetime.now(_EAT) - start_time).total_seconds() * 1000, 2
             )
 
-            logger.info(
-                "UCC validate response received",
-                extra={
-                    "service": "refugee",
-                    "environment": environment,
-                    "status_code": validate_response.status_code,
-                    "duration_ms": duration_ms,
-                    "individualId": individual_id,
-                },
-            )
+            # Response will be logged below with actual content
 
             if validate_response.status_code not in (200, 201):
                 raise Exception(
@@ -217,16 +188,7 @@ class RefugeeService:
             except Exception:
                 raise Exception("UCC validate returned non-JSON response")
 
-            logger.info(
-                "UCC refugee verification completed",
-                extra={
-                    "service": "refugee",
-                    "environment": environment,
-                    "individualId": individual_id,
-                    "result": result.get("result", "unknown"),
-                    "duration_ms": duration_ms,
-                },
-            )
+            logger.info(f"Verify Refugee Response(UCC):{result}")
 
             return result
 
