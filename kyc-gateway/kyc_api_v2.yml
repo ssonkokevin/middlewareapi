@@ -1,0 +1,3441 @@
+openapi: 3.0.3
+
+info:
+  title: KYC Verification API
+  version: 2.0.0
+  description: |
+    The KYC Verification API enables Mobile Network Operators (MNOs) to submit
+    SIM registration information for validation and compliance.
+
+    ----------------------------------------------------------------------
+    OVERVIEW
+    ----------------------------------------------------------------------
+    This API is designed to support SIM registration workflows by:
+      - checking SIM ownership eligibility/ limits before registration
+      - verifying subscriber identity and biometric data against the external registries
+        (NIRA, UNHCR, NCIC, URSB, etc)
+      - accepting or rejecting SIM registration records
+      - supporting full subscriber record updates with re-verification
+      - supporting asynchronous batch uploads for high-volume operations
+      - notifying operators of batch completion through a signed callback (webhook)
+      - generating compliance reports
+
+    ----------------------------------------------------------------------
+    WHAT CHANGED IN 2.0.0 (BREAKING)
+    ----------------------------------------------------------------------
+    Identity verification is now a separate step from registration.
+
+      - NEW  POST /identity_verification returns a verification_reference.
+      - The registration endpoints no longer carry a `biometric` object.
+        They carry `verification_reference` instead.
+      - `eligibility_token` is removed, along with its two reason codes.
+      - `id_type` is reduced from seven values to three.
+      - Biometric payloads are now provider-specific: a signed MOSIP SBI block
+        for NIRA, an ISO/IEC 19794-4 image record for all other registries.
+
+    ----------------------------------------------------------------------
+    AUTHENTICATION
+    ----------------------------------------------------------------------
+    Every endpoint requires an API key supplied in the `X-API-Key` request header.
+    A missing or unrecognised key returns HTTP 401 with error_code `UNAUTHORIZED`.
+    The key identifies the calling MNO; data-scoped endpoints (e.g. compliance
+    report) are automatically filtered to that MNO.
+
+    ----------------------------------------------------------------------
+    TWO-STEP REGISTRATION FLOW
+    ----------------------------------------------------------------------
+    Registration is a two-step operation. Verification happens first, and
+    registration second.
+
+      STEP 1 (required)  POST /ownership_check
+                         The authoritative ownership decision. Call it BEFORE
+                         capturing a biometric. It is not enforced by the API —
+                         but skipping it means paying for a verification that
+                         the registration will then refuse. Returns no token.
+
+      STEP 2 (required)  POST /identity_verification
+                         Send the identity and the biometric for validation
+                         against the external registry (NIRA, UNHCR, NCIC or
+                         URSB) in the format described below. This endpoint does
+                         NOT evaluate the ownership limit — it must remain usable
+                         for SIM swap, agent and fraud checks, where the SIM
+                         count is irrelevant. On success you receive a true/false
+                         result and a `verification_reference`.
+
+      STEP 3 (required)  POST /individual_registrations
+                         POST /corporate_registrations
+                         POST /individual_registrations/batch
+                         POST /corporate_registrations/batch
+                         Send the full record plus the verification_reference.
+                         No biometric. No time limit.
+
+    verification_reference rules:
+      - bound to the id_type + id_number verified in step 2; presenting it with
+        a different identity returns VERIFICATION_REFERENCE_MISMATCH
+      - valid for 24 hours; after that VERIFICATION_REFERENCE_EXPIRED
+      - reusable within its lifetime, so a failed SIM provisioning does not
+        force the subscriber to present a finger again. Every use is recorded.
+      - required by every registration endpoint, including PUT updates and
+        every record inside a batch
+
+    Why the split: the NIRA biometric freshness window (about 30 seconds) and
+    the provider-specific biometric format now apply to step 2 only. Step 3 is
+    untimed and format-free, which is what makes batch registration workable.
+
+    ----------------------------------------------------------------------
+    IDENTITY PROVIDERS AND BIOMETRIC FORMATS
+    ----------------------------------------------------------------------
+    `id_type` selects the authority that verifies the subscriber:
+
+      id_type           provider   status    biometric format
+      ----------------  ---------  --------  --------------------------------------
+      NATIONAL ID       NIRA       live      MOSIP_SBI_SIGNED (device-signed block)
+      REFUGEE ID        UNHCR      live      ISO_19794_4 (finger image record)
+      PASSPORT          NCIC       planned   not yet applicable
+      COI               URSB       planned   none — an organisation has no biometric
+      REGISTRY_PENDING  undecided  planned   none — an organisation has no biometric
+
+    NIRA — MOSIP_SBI_SIGNED
+      NIRA does not accept a bare template. It requires the block produced and
+      signed by a MOSIP-certified SBI capture device. Submit that block exactly
+      as the device produced it, inside `biometric.blocks`. UCC relays it to
+      NIRA unmodified — it does not parse, validate or reshape it. Altering the
+      block after capture will fail signature verification at NIRA.
+
+      Two NIRA constraints follow from this:
+        - the signed block must reach NIRA within about 30 SECONDS of capture,
+          so capture immediately before calling /identity_verification
+        - the block's signed transactionId must equal the `transaction_id` sent
+          in the request
+
+    UNHCR and future providers — ISO_19794_4
+      Send a full ISO/IEC 19794-4 finger IMAGE record, Base64 encoded, in
+      `biometric.data`. Note this is an image record and NOT an ISO/IEC 19794-2
+      minutiae template. Do not send extracted minutiae, and do not send a bare
+      JPEG or PNG file.
+
+    NCIC is not yet integrated. A PASSPORT verification returns verified=false
+    with reason_code VERIFICATION_UNAVAILABLE and provider_status PLANNED. A
+    reference is still issued, so the registration can proceed and be recorded
+    as unverified. When NCIC becomes available the same endpoint begins
+    returning real verdicts — no contract change is required.
+
+    ORGANISATION VERIFICATION
+      An organisation is verified against its own registry, NOT through a
+      nominated person. There is no biometric anywhere in the corporate flow, so
+      the ~30 second NIRA freshness window does not apply to it.
+
+      No organisation registry is integrated yet. EVERY corporate verification
+      currently returns verified=false with reason_code
+      VERIFICATION_UNAVAILABLE and provider_status PLANNED. A reference is still
+      issued, so registration can proceed and is recorded as unverified.
+
+      COI is routed to URSB, which is not connected. REGISTRY_PENDING has no
+      routed authority at all — UCC has not decided which body verifies the
+      remaining organisation types.
+
+      Consequence: until a registry is live, 100% of corporate registrations are
+      unverified. The representative details carried on the record are the only
+      accountability anchor on a corporate SIM.
+
+    Important biometric handling rules:
+      - Biometric data is processed transiently and is NEVER persisted by this
+        API. There is no biometric column in any table.
+      - Biometric data appears only on POST /identity_verification. It must
+        never be sent to a registration endpoint.
+      - Application logs must never record biometric data.
+      - Fingerprint is the only modality operators currently submit. IRIS is
+        reserved in the schema for subscribers who cannot provide a fingerprint.
+        For registries other than NIRA, ISO/IEC 19794-6 is supported for IRIS.
+
+    ----------------------------------------------------------------------
+    OWNERSHIP LIMIT POLICY
+    ----------------------------------------------------------------------
+    SIM ownership limits are configurable internally by UCC administrative users.
+    Therefore, the API response should be treated as the source of truth rather
+    than relying on any hard-coded ownership thresholds in MNO systems.
+
+    Limits are resolved in the following priority order:
+      1. Subscriber-specific override  — a limit set for a specific individual or corporate subscriber per network
+      2. Subscriber-type default       — a limit that applies to all individual or corporate subscribers per network
+      3. Global fallback               — applies when no more-specific rule exists (10 per individual per network & 100 per corporate subscriber per network)
+
+    For individual subscribers, the ownership count is the number of accepted SIM
+    registrations linked to that identity per network. For corporate subscribers, it is the
+    number of accepted SIM registrations linked to that company registration number per network.
+
+    The limit is evaluated at two points:
+      1. POST /ownership_check        — the authoritative check
+      2. at registration commit time  
+
+    A registration that would exceed the limit is rejected with HTTP 403 and
+    error_code LIMIT_EXCEEDED, even when a valid verification_reference is
+    supplied.
+
+    ----------------------------------------------------------------------
+    STANDARDIZED REASON CODES
+    ----------------------------------------------------------------------
+    The API uses standardized reason codes to support consistent operational
+    behavior and reporting.
+
+    Primary stakeholder-approved codes:
+      - LIMIT_EXCEEDED
+      - LIMIT_NOT_EXCEEDED
+      - INVALID_FIELD
+      - IDENTITY_ACCEPTED
+      - IDENTITY_REJECTED
+
+    Verification outcome codes (POST /identity_verification):
+      - IDENTITY_ACCEPTED         provider confirmed the subscriber
+      - IDENTITY_REJECTED         provider did not confirm the subscriber
+      - VERIFICATION_UNAVAILABLE  no provider is integrated for this id_type
+
+    Registration outcome code:
+      - REGISTRATION_ACCEPTED     the record was stored
+
+    verification_reference codes (registration endpoints):
+      - VERIFICATION_REQUIRED
+      - VERIFICATION_REFERENCE_INVALID
+      - VERIFICATION_REFERENCE_MISMATCH
+      - VERIFICATION_REFERENCE_EXPIRED
+
+    Additional operational codes used in request validation and processing:
+      - INVALID_ID
+      - INVALID_MSISDN
+      - INVALID_AGENT
+      - INVALID_BIOMETRIC
+      - MISSING_FIELD
+      - DUPLICATE_REQUEST
+      - INVALID_PAYLOAD
+      - NOT_FOUND
+      - SYSTEM_ERROR
+
+    Authentication code:
+      - UNAUTHORIZED
+
+    Note: LIMIT_EXCEEDED is used both as a success reason_code (HTTP 200) in an
+    ownership check, and as an error error_code (HTTP 403) when a registration is
+    blocked by the ownership limit.
+
+    Note: IDENTITY_ACCEPTED and IDENTITY_REJECTED moved in 2.0.0. They are now
+    outcomes of POST /identity_verification. A successful registration returns
+    REGISTRATION_ACCEPTED.
+
+    ----------------------------------------------------------------------
+    UPDATE RULE
+    ----------------------------------------------------------------------
+    Subscriber updates must be treated as full re-verification events.
+
+    This means:
+      - updates use PUT, not PATCH
+      - the full registration payload must be resubmitted
+      - id_number must be present
+      - a FRESH verification_reference must be present. Run
+        POST /identity_verification again before the update — an update may not
+        reuse the reference that authorised the original registration.
+      - the ownership limit is re-evaluated at commit time
+
+    ----------------------------------------------------------------------
+    BATCH COMPLETION WEBHOOK
+    ----------------------------------------------------------------------
+    In addition to the batch status endpoint, the API can notify an operator
+    when a batch job reaches a terminal state. This is an outbound HTTP POST
+    from UCC to an endpoint hosted by the operator — see the `callbacks`
+    section of POST /individual_registrations/batch for the payload schema.
+
+    Configuration:
+      - webhook delivery is arranged with UCC, not through this API. Send UCC
+        the endpoint URL you want notified; UCC registers it against your
+        operator record and issues you a dedicated signing secret in return,
+        over a secure channel agreed at onboarding.
+      - treat that secret as a credential: hold it in a secret manager, keep it
+        out of source control, and never expose it to a browser or mobile client
+      - if no URL is registered, no notification is sent — this is a supported
+        configuration, not an error condition
+      - the endpoint must be reachable from UCC infrastructure and should be
+        HTTPS in production
+
+    Delivery semantics:
+      - fired once the batch reaches `completed` or `failed`
+      - the operator endpoint must answer with a 2xx status code
+      - a non-2xx response, a connection error, or a response slower than
+        10 seconds is treated as a failed delivery
+      - failed deliveries are retried up to 5 times with increasing backoff,
+        after which the notification is abandoned
+      - delivery is therefore AT-LEAST-ONCE: the same event may arrive more
+        than once and operators must process it idempotently, keyed on job_id
+
+    Payload signing:
+      - each request carries an `X-KYC-Signature` header of the form
+        `sha256=<hex digest>`
+      - the digest is an HMAC-SHA256 over the raw, unmodified request body
+      - the signing key is the dedicated secret UCC issued to you at webhook
+        onboarding. It is symmetric — UCC signs with it and you verify with the
+        same value — so both parties must keep it confidential.
+      - if you have not been issued a secret, do not implement verification
+        against a guessed value; contact UCC. A webhook URL with no secret
+        registered against it is a misconfiguration, not a supported setup.
+      - verify the signature against the raw body BEFORE parsing the JSON, and
+        use a constant-time comparison
+
+    Relationship to polling:
+      - the notification carries summary counters only, never per-record
+        outcomes; retrieve those from GET /individual_registrations/batch/{job_id}
+      - the status endpoint remains the authoritative source of batch state.
+        Operators that cannot expose a public endpoint, or that require
+        guaranteed delivery, should poll instead.
+
+servers:
+  - url: "https://{{production-url}}/api/v1/kyc"
+    description: "Production (base URL to be confirmed)"
+
+tags:
+  - name: Ownership
+    description: |
+      Endpoints used to determine whether a subscriber is eligible to register
+      a new SIM card under the applicable ownership policy.
+  - name: Registration
+    description: |
+      Endpoints used to submit, update, and batch-process SIM registration data.
+  - name: Verification
+    description: |
+      Endpoint used to verify a subscriber identity and biometric against the
+      authority that owns the record, before registration is submitted.
+  - name: Compliance
+    description: |
+      Endpoints used to retrieve compliance reports.
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /ownership_check:
+    post:
+      tags:
+        - Ownership
+      summary: Verify SIM ownership eligibility
+      description: |
+        Checks whether a subscriber is eligible to register a new SIM card.
+
+        This endpoint must be called before registration begins. It evaluates
+        the ownership policy configured by UCC for the specific subscriber type
+        and returns whether the subscriber is allowed to proceed.
+
+        Business purpose:
+          - prevent excessive SIM ownership by individuals and companies
+          - support fraud prevention controls
+          - provide a consistent policy decision to all MNOs
+
+        Subscriber types:
+          - individual: ownership is counted against accepted SimRegistrations
+            for the given id_type + id_number combination
+          - corporate: ownership is counted against accepted CorporateRegistrations
+            for the given registration_number
+
+        Limit resolution order (highest priority first):
+          1. Subscriber-specific override (set by UCC per individual or corporate subscriber per network)
+          2. Subscriber-type default      (set by UCC for all individuals or all corporate subscribers per network)
+          3. Global fallback              (set by UCC as the system-wide default)
+
+        Notes:
+          - this endpoint does not register a SIM
+          - this endpoint does not verify identity or biometrics
+          - proceed to POST /identity_verification next
+      operationId: verifyOwnershipEligibility
+      requestBody:
+        required: true
+        description: |
+          Subscriber payload used to evaluate ownership eligibility.
+          The required fields depend on subscriber_type:
+            - individual: id_type and id_number are required
+            - corporate:  id_type and registration_number is required
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OwnershipCheckRequest"
+            examples:
+              individual_national_id:
+                summary: Individual check using National ID
+                value:
+                  subscriber_type: individual
+                  id_type: NATIONAL ID
+                  id_number: CF123456789ABCDE
+              individual_passport:
+                summary: Individual check using Passport
+                value:
+                  subscriber_type: individual
+                  id_type: PASSPORT
+                  id_number: P12345678
+              corporate:
+                summary: Corporate ownership check
+                value:
+                  subscriber_type: corporate
+                  id_type: COI
+                  registration_number: "80020001234"
+      responses:
+        "200":
+          description: Ownership eligibility decision returned successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnershipCheckResponse"
+              examples:
+                individual_eligible:
+                  summary: Individual is allowed to proceed
+                  value:
+                    status: success
+                    data:
+                      allowed: true
+                      reason_code: LIMIT_NOT_EXCEEDED
+                      message: Subscriber can register SIM
+                      current_count: 2
+                      limit: 5
+                corporate_eligible:
+                  summary: Corporate is allowed to proceed
+                  value:
+                    status: success
+                    data:
+                      allowed: true
+                      reason_code: LIMIT_NOT_EXCEEDED
+                      message: Subscriber can register SIM
+                      current_count: 0
+                      limit: 10
+                not_eligible:
+                  summary: Subscriber has exceeded ownership limit
+                  value:
+                    status: success
+                    data:
+                      allowed: false
+                      reason_code: LIMIT_EXCEEDED
+                      message: Subscriber has exceeded SIM ownership limit
+                      current_count: 5
+                      limit: 5
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "422":
+          description: Request payload failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing_subscriber_type:
+                  summary: subscriber_type not provided
+                  value:
+                    status: error
+                    error_code: MISSING_FIELD
+                    message: subscriber_type is required
+                invalid_subscriber_type:
+                  summary: Unrecognised subscriber_type value
+                  value:
+                    status: error
+                    error_code: INVALID_FIELD
+                    message: subscriber_type must be individual or corporate
+                missing_id_number:
+                  summary: Missing id_number for individual check
+                  value:
+                    status: error
+                    error_code: MISSING_FIELD
+                    message: id_number is required
+                invalid_id_type:
+                  summary: Invalid id_type value
+                  value:
+                    status: error
+                    error_code: INVALID_ID
+                    message: Invalid id_type
+                missing_registration_number:
+                  summary: Missing registration_number for corporate check
+                  value:
+                    status: error
+                    error_code: MISSING_FIELD
+                    message: registration_number is required
+
+  /identity_verification:
+    post:
+      tags:
+        - Verification
+      summary: Verify subscriber identity and biometric
+      description: |
+        Verifies a subscriber against the relevant identity registry (NIRA, UNHCR, URSB, NCIC), and
+        returns a `verification_reference` for use at registration.
+
+        Processing order:
+          1. Validate the request payload
+          2. Select the provider from id_type (see IDENTITY PROVIDERS in the
+             API description)
+          3. Relay the identity and biometric to that provider
+          4. Return the outcome and, on success, a verification_reference
+
+        This endpoint does NOT evaluate the ownership limit. That is the job of
+        POST /ownership_check, and of the check performed at registration commit.
+        Verification is deliberately independent of SIM count so it can also
+        serve SIM swap, agent onboarding and fraud checks.
+
+        Timing — this is the only time-critical endpoint in the API. For
+        NATIONAL ID, the device-signed block must reach NIRA within about 30
+        seconds of capture. Capture the biometric immediately before calling
+        this endpoint. If the block goes stale the subscriber must present a
+        finger again; the same block cannot be retried.
+
+        A failure to match is NOT an HTTP error. It is HTTP 200 with
+        verified=false and reason_code IDENTITY_REJECTED. Branch on
+        `data.verified` and `data.reason_code`, never on the HTTP status alone.
+
+        This endpoint is per-subscriber and real time. It is never batched.
+      operationId: verifyIdentity
+      requestBody:
+        required: true
+        description: |
+          Subscriber identity plus the biometric captured for this verification.
+          The biometric format must match the provider for the given id_type.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IdentityVerificationRequest"
+            examples:
+              national_id_nira:
+                summary: National ID — signed MOSIP SBI block relayed to NIRA
+                value:
+                  id_type: NATIONAL ID
+                  id_number: CF123456789ABCDE
+                  transaction_id: "9181672570"
+                  biometric:
+                    biometric_type: FINGERPRINT
+                    format: MOSIP_SBI_SIGNED
+                    blocks:
+                      - specVersion: "0.9.5"
+                        data: eyJhbGciOiJSUzI1NiIsIng1YyI6WyJNSUlE...
+                        hash: A1B2C3...
+                        sessionKey: kR9dP...
+                        thumbprint: 3f5a9c...
+              refugee_id_unhcr:
+                summary: Refugee ID — ISO 19794-4 finger image sent to UNHCR
+                value:
+                  id_type: REFUGEE ID
+                  id_number: UGA-2024-0098765
+                  biometric:
+                    biometric_type: FINGERPRINT
+                    format: ISO_19794_4
+                    data: Uk9OQVBJU08xOTc5NDQAAAAA...
+              passport_ncic:
+                summary: Passport — NCIC not yet integrated, biometric omitted
+                value:
+                  id_type: PASSPORT
+                  id_number: P12345678
+                  visa_validity: "2027-06-30"
+              company_ursb:
+                summary: Company — COI routed to URSB, not yet integrated
+                value:
+                  id_type: COI
+                  id_number: "80020012345678"
+              ministry_pending:
+                summary: Ministry — no registry decided, no document to verify
+                value:
+                  id_type: REGISTRY_PENDING
+                  id_number: MOH-UG
+      responses:
+        "200":
+          description: |
+            Verification completed. Inspect data.verified — a non-match is a
+            successful request, not an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdentityVerificationResponse"
+              examples:
+                verified_nira:
+                  summary: NIRA confirmed the subscriber
+                  value:
+                    status: success
+                    data:
+                      verified: true
+                      reason_code: IDENTITY_ACCEPTED
+                      message: Identity verified
+                      provider: NIRA
+                      verification_reference: vrf_01JBK2QX7M4T8ZC3
+                      verified_at: "2026-08-24T09:14:22.481Z"
+                      expires_at: "2026-08-25T09:14:22.481Z"
+                verified_unhcr:
+                  summary: UNHCR confirmed the subscriber and corroborated attributes
+                  value:
+                    status: success
+                    data:
+                      verified: true
+                      reason_code: IDENTITY_ACCEPTED
+                      message: Identity verified
+                      provider: UNHCR
+                      verification_reference: vrf_01JBK3RM9P2W6YD1
+                      verified_at: "2026-08-24T09:14:22.481Z"
+                      expires_at: "2026-08-25T09:14:22.481Z"
+                      matched_attributes:
+                        date_of_birth: MATCH
+                        sex: F
+                not_verified:
+                  summary: Biometric did not match the provider record
+                  value:
+                    status: success
+                    data:
+                      verified: false
+                      reason_code: IDENTITY_REJECTED
+                      message: Biometric did not match the identity record
+                      provider: NIRA
+                provider_unavailable:
+                  summary: No provider is integrated for this id_type yet
+                  value:
+                    status: success
+                    data:
+                      verified: false
+                      reason_code: VERIFICATION_UNAVAILABLE
+                      message: No verification provider is currently available for PASSPORT
+                      provider: NCIC
+                      provider_status: PLANNED
+                      verification_reference: vrf_01JBK4TN0Q3X7ZE2
+                      expires_at: "2026-08-25T09:14:22.481Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          description: |
+            The subscriber already holds the maximum number of SIM cards. No
+            provider was called, so no provider charge was incurred.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                limit_exceeded:
+                  summary: Ownership limit reached — checked before the provider call
+                  value:
+                    status: error
+                    error_code: LIMIT_EXCEEDED
+                    message: Subscriber has exceeded SIM ownership limit
+        "422":
+          description: Request payload failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                stale_capture:
+                  summary: Signed block reached the provider too late
+                  value:
+                    status: error
+                    error_code: INVALID_BIOMETRIC
+                    message: Biometric capture expired; recapture and retry
+                wrong_format:
+                  summary: Biometric format does not match the provider
+                  value:
+                    status: error
+                    error_code: INVALID_BIOMETRIC
+                    message: NATIONAL ID requires format MOSIP_SBI_SIGNED
+                missing_transaction_id:
+                  summary: transaction_id absent for a signed block
+                  value:
+                    status: error
+                    error_code: MISSING_FIELD
+                    message: transaction_id is required when format is MOSIP_SBI_SIGNED
+                invalid_id_type:
+                  summary: Unrecognised id_type value
+                  value:
+                    status: error
+                    error_code: INVALID_ID
+                    message: Invalid id_type
+        "500":
+          description: Unexpected processing failure, or the provider was unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                system_error:
+                  summary: Provider could not be reached
+                  value:
+                    status: error
+                    error_code: SYSTEM_ERROR
+                    message: Unable to complete verification at this time
+
+  /individual_registrations:
+    post:
+      tags:
+        - Registration
+      summary: Register individual SIM
+      description: |
+        Registers a SIM for an individual subscriber.
+
+        This is the primary endpoint used by MNOs for individual SIM registration.
+
+        Call POST /identity_verification first and send the
+        `verification_reference` it returned.
+
+        Processing flow:
+          1. Validate the request payload structure
+          2. Validate the verification_reference — it must exist, be unexpired,
+             and be bound to the id_type + id_number in this request
+          3. Validate mandatory registration fields
+          4. Validate agent data
+          5. Validate MSISDN format
+          6. Re-evaluate the ownership limit
+          7. Accept or reject the registration
+
+        This endpoint does NOT carry a biometric and does NOT call a provider.
+        Identity was already established in step 2, and the reference is the
+        proof of it. Sending a `biometric` object here is a validation error.
+
+        There is no time limit on this call. If SIM provisioning fails, you may
+        submit the registration again with the same reference while it is valid.
+
+        Operational notes:
+          - acceptance means the record was stored, and returns
+            REGISTRATION_ACCEPTED
+          - rejection means payload validation, reference validation, or a
+            policy rule failed
+      operationId: createIndividualRegistration
+      requestBody:
+        required: true
+        description: |
+          Full individual SIM registration payload including identity data,
+          the verification_reference, and registration agent details.
+          No biometric data is carried here.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IndividualRegistrationRequest"
+            examples:
+              ugandan_national:
+                summary: Individual SIM registration for a Ugandan national
+                value:
+                  verification_reference: vrf_01JBK2QX7M4T8ZC3
+                  msisdn: "256712345678"
+                  sim_registration_type: NEW
+                  sim_type: SIM
+                  sim_registration_datetime: "2025-11-01T10:22:00Z"
+                  id_type: NATIONAL ID
+                  id_number: CF123456789ABCDE
+                  nationality: UGANDAN
+                  surname: KATO
+                  given_name: JOHN
+                  gender: MALE
+                  date_of_birth: "1995-05-12"
+                  id_validity: "2030-12-31"
+                  agent_code: AGT001
+                  agent_number: "256712345678"
+                  sales_district: KAMPALA
+                  gps_coordinates: "32.5825,0.3476"
+                  activation_date: "2025-10-01"
+              foreigner_passport:
+                summary: Foreigner using a passport — reference from an unavailable provider
+                value:
+                  verification_reference: vrf_01JBK4TN0Q3X7ZE2
+                  msisdn: "256712300001"
+                  sim_registration_type: NEW
+                  sim_type: ESIM
+                  sim_registration_datetime: "2025-11-01T11:00:00Z"
+                  id_type: PASSPORT
+                  id_number: P12345678
+                  nationality: KENYAN
+                  surname: AYO
+                  given_name: GRACE
+                  gender: FEMALE
+                  date_of_birth: "1997-02-11"
+                  visa_permit_number: VISA12345
+                  visa_validity: "2027-06-30"
+                  agent_code: AGT002
+                  agent_number: "256712300002"
+                  sales_district: WAKISO
+                  gps_coordinates: "32.5000,0.4000"
+                  activation_date: "2025-10-01"
+      responses:
+        "200":
+          description: Registration accepted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StandardResponse"
+              examples:
+                accepted:
+                  summary: Registration stored
+                  value:
+                    status: accepted
+                    reason_code: REGISTRATION_ACCEPTED
+                    message: SIM registration stored
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          description: The verification_reference is missing, invalid, expired, bound to another identity, or the ownership limit was reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                verification_required:
+                  summary: No verification_reference supplied
+                  value:
+                    status: error
+                    error_code: VERIFICATION_REQUIRED
+                    message: A verification_reference from identity_verification is required
+                reference_invalid:
+                  summary: Reference is not recognised
+                  value:
+                    status: error
+                    error_code: VERIFICATION_REFERENCE_INVALID
+                    message: Verification reference is not recognised
+                reference_expired:
+                  summary: Reference is older than 24 hours
+                  value:
+                    status: error
+                    error_code: VERIFICATION_REFERENCE_EXPIRED
+                    message: Verification reference expired; re-verify the subscriber
+                reference_mismatch:
+                  summary: Reference was issued for a different identity
+                  value:
+                    status: error
+                    error_code: VERIFICATION_REFERENCE_MISMATCH
+                    message: Verification reference does not match the supplied identity
+                limit_exceeded:
+                  summary: Ownership limit reached at registration time
+                  value:
+                    status: error
+                    error_code: LIMIT_EXCEEDED
+                    message: Subscriber has exceeded SIM ownership limit
+        "409":
+          description: Registration conflicts with an existing record or duplicate request state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                duplicate_registration:
+                  summary: SIM already registered
+                  value:
+                    status: error
+                    error_code: DUPLICATE_REQUEST
+                    message: SIM already registered
+        "422":
+          description: Registration failed validation or business rule checks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid_msisdn:
+                  summary: MSISDN format is invalid
+                  value:
+                    status: error
+                    error_code: INVALID_MSISDN
+                    message: Invalid MSISDN format
+                invalid_agent:
+                  summary: Agent data is invalid
+                  value:
+                    status: error
+                    error_code: INVALID_AGENT
+                    message: Agent number format is invalid
+                missing_field:
+                  summary: Required field is missing
+                  value:
+                    status: error
+                    error_code: MISSING_FIELD
+                    message: surname is required
+                biometric_not_allowed:
+                  summary: A biometric object was sent to a registration endpoint
+                  value:
+                    status: error
+                    error_code: INVALID_PAYLOAD
+                    message: biometric is not accepted here; send it to /identity_verification
+        "500":
+          description: Unexpected processing failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                system_error:
+                  summary: Internal processing issue
+                  value:
+                    status: error
+                    error_code: SYSTEM_ERROR
+                    message: Unable to complete registration at this time
+
+  /corporate_registrations:
+    post:
+      tags:
+        - Registration
+      summary: Register corporate SIM
+      description: |
+        Registers a SIM card for a corporate entity or institution.
+
+        Verify the ORGANISATION first through POST /identity_verification,
+        using its registration document — COI for a company or business, or
+        REGISTRY_PENDING where UCC has not yet named the registry. Send the
+        reference it returned as `verification_reference` here.
+
+        The nominated representative is NO LONGER verified. Their details are
+        still required, and are recorded for traceability, but no identity or
+        biometric check is performed on them.
+
+        Corporate registration includes:
+          - organisation details
+          - registration details
+          - contact details
+          - representative identity details — recorded, not verified
+          - registration agent details
+
+        No organisation registry is connected yet, so every corporate
+        registration is currently accepted as UNVERIFIED.
+
+        This endpoint is intended for:
+          - companies
+          - businesses
+          - trusts
+          - cooperatives
+          - NGOs
+          - ministries, departments and authorities
+          - regional organisations
+          - international organisations
+      operationId: createCorporateRegistration
+      requestBody:
+        required: true
+        description: |
+          Full corporate SIM registration payload including representative
+          identity and the verification_reference issued for that representative.
+          No biometric data is carried here.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CorporateRegistrationRequest"
+            examples:
+              business_registration:
+                summary: Corporate registration
+                value:
+                  verification_reference: vrf_01JBK8XS4U7B1DJ6
+                  id_type: COI
+                  msisdn: "256712345679"
+                  sim_type: SIM
+                  sim_registration_type: NEW
+                  sim_registration_datetime: "2025-11-01T10:22:00Z"
+                  organisation_type: COMPANY
+                  organisation_name: ABC LIMITED
+                  registration_number: "80020012345678"
+                  registration_validity: "2028-12-31"
+                  registered_address: KAMPALA ROAD
+                  tax_identification_number: TIN123456
+                  contact_number: "256712345679"
+                  representative:
+                    id_type: NATIONAL ID
+                    id_number: CF123456789ABCDE
+                    nationality: UGANDAN
+                    surname: KATO
+                    given_name: JOHN
+                    gender: MALE
+                    date_of_birth: "1983-05-12"
+                    validity: "2030-12-31"
+                  agent_code: AGT001
+                  agent_number: "256712345678"
+                  sales_district: KAMPALA
+                  gps_coordinates: "32.5825,0.3476"
+                  activation_date: "2025-10-01"
+      responses:
+        "200":
+          description: Corporate registration accepted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StandardResponse"
+              examples:
+                accepted:
+                  summary: Corporate registration stored
+                  value:
+                    status: accepted
+                    reason_code: REGISTRATION_ACCEPTED
+                    message: Corporate SIM registration recorded
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          description: The verification_reference is missing, invalid, expired, bound to another identity, or the ownership limit was reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                verification_required:
+                  summary: No verification_reference supplied
+                  value:
+                    status: error
+                    error_code: VERIFICATION_REQUIRED
+                    message: A verification_reference for the representative is required
+                reference_mismatch:
+                  summary: Reference does not match the representative identity
+                  value:
+                    status: error
+                    error_code: VERIFICATION_REFERENCE_MISMATCH
+                    message: Verification reference does not match the representative identity
+                reference_expired:
+                  summary: Reference is older than 24 hours
+                  value:
+                    status: error
+                    error_code: VERIFICATION_REFERENCE_EXPIRED
+                    message: Verification reference expired; re-verify the representative
+                limit_exceeded:
+                  summary: Ownership limit reached at registration time
+                  value:
+                    status: error
+                    error_code: LIMIT_EXCEEDED
+                    message: Subscriber has exceeded SIM ownership limit
+        "409":
+          description: Registration conflicts with an existing record or duplicate request state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                duplicate_registration:
+                  summary: Duplicate corporate registration
+                  value:
+                    status: error
+                    error_code: DUPLICATE_REQUEST
+                    message: Corporate SIM already registered
+        "422":
+          description: Corporate registration failed validation or business rules.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing_field:
+                  summary: Missing required organisation field
+                  value:
+                    status: error
+                    error_code: MISSING_FIELD
+                    message: organisation_name is required
+                invalid_payload:
+                  summary: Invalid corporate payload
+                  value:
+                    status: error
+                    error_code: INVALID_PAYLOAD
+                    message: representative is required
+        "500":
+          description: Unexpected processing failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                system_error:
+                  summary: Internal processing issue
+                  value:
+                    status: error
+                    error_code: SYSTEM_ERROR
+                    message: Unable to complete corporate registration at this time
+
+  /individual_registrations/{msisdn}:
+    put:
+      tags:
+        - Registration
+      summary: Update subscriber registration
+      description: |
+        Fully replaces an existing subscriber registration record.
+
+        This endpoint is intentionally designed as PUT rather than PATCH
+        because updates must be treated as full re-validation events.
+
+        This is the RE-REGISTRATION operation. Send
+        `sim_registration_type: RE_REGISTRATION` when the subscriber is proving
+        their identity again, for example during a re-registration
+        exercise.
+
+        Update requirements:
+          - full registration payload must be provided
+          - id_number must be present, and must MATCH the current record. A
+            different id_number is a transfer, not an update — use
+            POST /individual_registrations/{msisdn}/ownership_change instead.
+          - a FRESH verification_reference must be present. Run
+            POST /identity_verification again before calling this endpoint.
+            An update may not reuse the reference that authorised the original
+            registration.
+          - the ownership limit is re-evaluated at commit time
+
+        The previous record is SUPERSEDED, not overwritten. It stays readable in
+        the history of the MSISDN.
+
+        To correct a detail without re-proving identity — a subscriber who
+        married and changed surname, or an agent typing error — use
+        PATCH /individual_registrations/{msisdn} instead. That operation needs
+        no verification and no biometric.
+
+        This ensures that no partial update bypasses validation rules.
+      operationId: updateIndividualRegistration
+      parameters:
+        - name: msisdn
+          in: path
+          required: true
+          description: Subscriber MSISDN in international format.
+          schema:
+            type: string
+            pattern: '^2567\d{8}$'
+            example: "256712345678"
+      requestBody:
+        required: true
+        description: |
+          Full replacement registration payload. This contains the same fields
+          as an individual registration, including a fresh verification_reference.
+          The record must be fully re-submitted and re-verified.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IndividualRegistrationRecord"
+            examples:
+              full_update:
+                summary: Full subscriber update with a fresh verification reference
+                value:
+                  verification_reference: vrf_01JBK6VQ2S5Z9BG4
+                  msisdn: "256712345678"
+                  sim_registration_type: SIM SWAP
+                  sim_type: SIM
+                  sim_registration_datetime: "2025-12-01T09:00:00Z"
+                  id_type: NATIONAL ID
+                  id_number: CF123456789ABCDE
+                  nationality: UGANDAN
+                  surname: KATO
+                  given_name: JOHN PAUL
+                  gender: MALE
+                  date_of_birth: "1994-05-12"
+                  id_validity: "2030-12-31"
+                  agent_code: AGT001
+                  agent_number: "256712345678"
+                  sales_district: KAMPALA
+                  gps_coordinates: "32.5825,0.3476"
+                  activation_date: "2025-10-01"
+      responses:
+        "200":
+          description: Subscriber record updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StandardResponse"
+              examples:
+                updated:
+                  summary: Update accepted
+                  value:
+                    status: updated
+                    reason_code: REGISTRATION_ACCEPTED
+                    message: Subscriber information successfully updated
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          description: Subscriber record not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                not_found:
+                  summary: No matching subscriber
+                  value:
+                    status: error
+                    error_code: NOT_FOUND
+                    message: Subscriber not found
+        "422":
+          description: Update failed validation or re-validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing_reference:
+                  summary: verification_reference missing from the update
+                  value:
+                    status: error
+                    error_code: VERIFICATION_REQUIRED
+                    message: A fresh verification_reference is required for updates
+                invalid_msisdn:
+                  summary: MSISDN in the path or body is invalid
+                  value:
+                    status: error
+                    error_code: INVALID_MSISDN
+                    message: Invalid MSISDN format
+        "500":
+          description: Unexpected processing failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                system_error:
+                  summary: Internal processing issue
+                  value:
+                    status: error
+                    error_code: SYSTEM_ERROR
+                    message: Unable to complete update at this time
+
+    patch:
+      tags:
+        - Registration
+      summary: Amend subscriber details
+      description: |
+        Corrects the details of the SAME subscriber. Use it when a person keeps
+        the same identity document but a detail on the record changes. A woman
+        who marries and takes the name of her husband is the common case.
+
+        This operation needs NO verification and NO biometric. The id_number
+        cannot change here, so the identity of the record does not change.
+
+        Only the fields in AmendableFields may be sent. A request that carries
+        id_type, id_number, msisdn or mno_id is refused with
+        FIELD_NOT_AMENDABLE. Those fields identify the record, and a change to
+        them is a different operation.
+
+        The record is superseded, not overwritten. The previous values stay
+        readable in the history of the number.
+      operationId: amendIndividualRegistration
+      parameters:
+        - name: msisdn
+          in: path
+          required: true
+          description: Subscriber MSISDN in international format.
+          schema:
+            type: string
+            pattern: '^2567\d{8}$'
+            example: "256712345678"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AmendmentRequest"
+            examples:
+              married_name:
+                summary: Subscriber married and took a new surname
+                value:
+                  change_reason: LEGAL_NAME_CHANGE
+                  evidence_reference: MC/2026/004412
+                  changes:
+                    surname: MUKASA
+              correct_spelling:
+                summary: Agent mistyped the given name at registration
+                value:
+                  change_reason: CORRECTION
+                  changes:
+                    given_name: GRACE
+      responses:
+        "200":
+          description: Subscriber details amended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AmendmentResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          description: |
+            No active registration for this MSISDN under the calling operator.
+            A record held by another operator also returns 404, so the response
+            does not reveal that it exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The registration is not active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: The request tried to change a field that is fixed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                not_amendable:
+                  value:
+                    status: error
+                    error_code: FIELD_NOT_AMENDABLE
+                    message: id_number cannot be amended; use ownership_change
+
+  /individual_registrations/batch:
+    post:
+      tags:
+        - Registration
+      summary: Submit batch SIM registrations
+      description: |
+        Accepts a batch of SIM registration records for asynchronous processing.
+
+        This endpoint is designed for high-volume operator integration.
+
+        Every record must carry its own verification_reference, obtained from
+        POST /identity_verification before the batch is submitted. Identity
+        verification is real time and per subscriber — it is never batched.
+
+        Because a batch carries no biometric data, the NIRA freshness window
+        does not apply to it. This is what makes batch registration workable.
+
+        Batch processing behavior:
+          - maximum batch size is 1000 records
+          - each record is processed independently
+          - the request returns a job_id rather than immediate per-record results
+          - per-record outcomes are retrieved from the batch status endpoint
+          - duplicate submissions should be prevented using Idempotency-Key
+
+        Learning that a batch has finished:
+          - poll GET /individual_registrations/batch/{job_id} — always available, and
+            the authoritative source of batch state
+          - or, if UCC has registered a callback URL for the operator, receive a
+            signed `batch.completed` notification when the job reaches a terminal
+            state (see the callbacks section below, and BATCH COMPLETION WEBHOOK
+            in the API description)
+
+        The callback is a convenience notification, not a replacement for the
+        status endpoint: it carries summary counters only, and delivery is
+        at-least-once and best-effort.
+
+        Recommended operator behavior:
+          - generate a unique Idempotency-Key per logical batch submission
+          - persist the returned job_id
+          - poll the status endpoint until completion, or use the callback as a
+            trigger to fetch results from that endpoint
+      operationId: createIndividualBatchRegistration
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: |
+            A client-generated key used to prevent duplicate batch submissions.
+          schema:
+            type: string
+            example: 6f7d6a6f-0b0d-4e59-9a88-6f5b1c7dd001
+      requestBody:
+        required: true
+        description: |
+          Batch of individual registration records for asynchronous processing.
+          Every record carries its own verification_reference and no biometric.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IndividualBatchRegistrationRequest"
+            examples:
+              two_record_batch:
+                summary: Small batch with two records
+                value:
+                  records:
+                    - verification_reference: vrf_01JBK2QX7M4T8ZC3
+                      msisdn: "256712345678"
+                      sim_registration_type: NEW
+                      sim_type: SIM
+                      sim_registration_datetime: "2025-11-01T10:22:00Z"
+                      id_type: NATIONAL ID
+                      id_number: CF123456789ABCDE
+                      nationality: UGANDAN
+                      surname: KATO
+                      given_name: JOHN
+                      gender: MALE
+                      date_of_birth: "1995-05-12"
+                      agent_code: AGT001
+                      agent_number: "256712345678"
+                      sales_district: KAMPALA
+                      gps_coordinates: "32.5825,0.3476"
+                      activation_date: "2025-10-01"
+                    - verification_reference: vrf_01JBK3RM9P2W6YD1
+                      msisdn: "256712300001"
+                      sim_registration_type: NEW
+                      sim_type: ESIM
+                      sim_registration_datetime: "2025-11-01T11:00:00Z"
+                      id_type: REFUGEE ID
+                      id_number: UGA-2024-0098765
+                      nationality: SOUTH SUDANESE
+                      surname: AYO
+                      given_name: GRACE
+                      gender: FEMALE
+                      date_of_birth: "1997-02-11"
+                      agent_code: AGT002
+                      agent_number: "256712300002"
+                      sales_district: WAKISO
+                      gps_coordinates: "32.5000,0.4000"
+                      activation_date: "2025-10-01"
+      responses:
+        "202":
+          description: Batch accepted for asynchronous processing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchAcceptedResponse"
+              examples:
+                accepted:
+                  summary: Batch accepted
+                  value:
+                    status: accepted
+                    job_id: batch_123456
+                    message: Batch accepted for processing
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "409":
+          description: Duplicate batch submission detected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                duplicate_batch:
+                  summary: Same idempotency key reused
+                  value:
+                    status: error
+                    error_code: DUPLICATE_REQUEST
+                    message: Duplicate batch submission
+        "422":
+          description: Batch payload failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                too_many_records:
+                  summary: Batch exceeds supported limit
+                  value:
+                    status: error
+                    error_code: INVALID_PAYLOAD
+                    message: Batch exceeds maximum size of 1000 records
+                missing_records:
+                  summary: Records array missing
+                  value:
+                    status: error
+                    error_code: MISSING_FIELD
+                    message: records is required
+      callbacks:
+        batchCompleted:
+          "{$mno.webhook_url}":
+            post:
+              summary: Batch completion notification
+              description: |
+                Sent by UCC to the operator when a batch job submitted through this
+                endpoint reaches a terminal state (`completed` or `failed`).
+
+                The destination URL is registered by UCC administrative staff against
+                the operator record and cannot be set through this API. Where no URL
+                is registered, no notification is sent.
+
+                The request is authenticated by an HMAC-SHA256 signature over the raw
+                request body, not by an API key — see the X-KYC-Signature header and
+                BATCH COMPLETION WEBHOOK in the API description.
+
+                The endpoint must return 2xx. Anything else — including a timeout of
+                more than 10 seconds — is retried up to 5 times with increasing
+                backoff, so the same event may be delivered more than once.
+              operationId: batchCompletedCallback
+              security: []
+              parameters:
+                - name: X-KYC-Signature
+                  in: header
+                  required: true
+                  description: |
+                    HMAC-SHA256 of the raw request body, keyed on the dedicated
+                    signing secret UCC issued to your operator record, in the form
+                    `sha256=<hex digest>`. Verify before parsing the body, using a
+                    constant-time comparison.
+                  schema:
+                    type: string
+                    example: sha256=3b8a9dd0b6a4d1f5f7e0f9e2c1d4a6b8c0e2f4a6b8d0c2e4f6a8b0d2e4f6a8b0
+              requestBody:
+                required: true
+                description: Batch completion event.
+                content:
+                  application/json:
+                    schema:
+                      $ref: "#/components/schemas/BatchCompletedEvent"
+                    examples:
+                      completed:
+                        summary: Batch finished processing
+                        value:
+                          event: batch.completed
+                          job_id: batch_123456
+                          status: completed
+                          total_records: 100
+                          processed_records: 100
+                          successful_records: 95
+                          failed_records: 5
+                          timestamp: "2026-07-31T10:25:00Z"
+                      failed:
+                        summary: Batch aborted on a processing error
+                        value:
+                          event: batch.completed
+                          job_id: batch_123457
+                          status: failed
+                          total_records: 100
+                          processed_records: 0
+                          successful_records: 0
+                          failed_records: 0
+                          timestamp: "2026-07-31T10:25:00Z"
+              responses:
+                "2XX":
+                  description: |
+                    Notification accepted. Any 2xx status ends delivery for this event.
+                default:
+                  description: |
+                    Delivery treated as failed and retried, up to 5 attempts in total.
+
+  /individual_registrations/batch/{job_id}:
+    get:
+      tags:
+        - Registration
+      summary: Retrieve batch processing status
+      description: |
+        Retrieves the current processing status and results of a previously
+        submitted batch job.
+
+        Typical lifecycle:
+          - pending
+          - processing
+          - completed
+          - failed
+      operationId: getIndividualBatchStatus
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: Batch job identifier returned by the batch submission endpoint.
+          schema:
+            type: string
+            example: batch_123456
+      responses:
+        "200":
+          description: Batch status retrieved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchStatusResponse"
+              examples:
+                pending:
+                  summary: Batch has been accepted but not yet started
+                  value:
+                    job_id: batch_123456
+                    status: pending
+                    total_records: 100
+                    processed_records: 0
+                    successful_records: 0
+                    failed_records: 0
+                    results: []
+                processing:
+                  summary: Batch is currently running
+                  value:
+                    job_id: batch_123456
+                    status: processing
+                    total_records: 100
+                    processed_records: 50
+                    successful_records: 45
+                    failed_records: 5
+                    results: []
+                completed:
+                  summary: Batch completed with mixed outcomes
+                  value:
+                    job_id: batch_123456
+                    status: completed
+                    total_records: 2
+                    processed_records: 2
+                    successful_records: 1
+                    failed_records: 1
+                    results:
+                      - msisdn: "256712345678"
+                        status: accepted
+                        reason_code: REGISTRATION_ACCEPTED
+                        verification_reference: vrf_01JBK2QX7M4T8ZC3
+                        error_message: null
+                      - msisdn: "256712300001"
+                        status: rejected
+                        reason_code: INVALID_MSISDN
+                        error_message: Invalid MSISDN format
+                failed:
+                  summary: Batch failed due to processing issue
+                  value:
+                    job_id: batch_123456
+                    status: failed
+                    total_records: 100
+                    processed_records: 0
+                    successful_records: 0
+                    failed_records: 0
+                    results: []
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          description: No batch job exists for the supplied job_id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                not_found:
+                  summary: Unknown job ID
+                  value:
+                    status: error
+                    error_code: NOT_FOUND
+                    message: Job not found
+
+  /corporate_registrations/batch:
+    post:
+      tags:
+        - Registration
+      summary: Submit batch corporate registrations
+      description: |
+        Accepts a batch of corporate registration records for asynchronous
+        processing. This mirrors POST /individual_registrations/batch, for operators
+        that onboard companies in volume.
+
+        Every record must carry its own verification_reference for its nominated
+        representative, obtained from POST /identity_verification before the
+        batch is submitted. Identity verification is real time and per
+        subscriber — it is never batched.
+
+        Batch processing behavior is identical to the individual batch endpoint:
+          - maximum batch size is 1000 records
+          - each record is processed independently
+          - the request returns a job_id
+          - per-record outcomes are retrieved from
+            GET /corporate_registrations/batch/{job_id}
+          - duplicate submissions should be prevented using Idempotency-Key
+      operationId: createBatchCorporateRegistration
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: |
+            A client-generated key used to prevent duplicate batch submissions.
+          schema:
+            type: string
+            example: 9a1c2b3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d
+      requestBody:
+        required: true
+        description: |
+          Batch of corporate registration records for asynchronous processing.
+          Every record carries its own verification_reference and no biometric.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CorporateBatchRegistrationRequest"
+            examples:
+              single_record_batch:
+                summary: Batch with one company record
+                value:
+                  records:
+                    - verification_reference: vrf_01JBK8XS4U7B1DJ6
+                      id_type: COI
+                      msisdn: "256712345679"
+                      sim_type: SIM
+                      sim_registration_type: NEW
+                      sim_registration_datetime: "2025-11-01T10:22:00Z"
+                      organisation_type: COMPANY
+                      organisation_name: ABC LIMITED
+                      registration_number: "80020012345678"
+                      registration_validity: "2028-12-31"
+                      registered_address: KAMPALA ROAD
+                      tax_identification_number: TIN123456
+                      contact_number: "256712345679"
+                      representative:
+                        id_type: NATIONAL ID
+                        id_number: CF123456789ABCDE
+                        nationality: UGANDAN
+                        surname: KATO
+                        given_name: JOHN
+                        gender: MALE
+                        date_of_birth: "1983-05-12"
+                      agent_code: AGT001
+                      agent_number: "256712345678"
+                      sales_district: KAMPALA
+                      gps_coordinates: "32.5825,0.3476"
+                      activation_date: "2025-10-01"
+      responses:
+        "202":
+          description: Batch accepted for asynchronous processing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchAcceptedResponse"
+              examples:
+                accepted:
+                  summary: Batch accepted
+                  value:
+                    status: accepted
+                    job_id: cbatch_123456
+                    message: Batch accepted for processing
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "409":
+          description: Duplicate batch submission detected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                duplicate_batch:
+                  summary: Same idempotency key reused
+                  value:
+                    status: error
+                    error_code: DUPLICATE_REQUEST
+                    message: Duplicate batch submission
+        "422":
+          description: Batch payload failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                too_many_records:
+                  summary: Batch exceeds supported limit
+                  value:
+                    status: error
+                    error_code: INVALID_PAYLOAD
+                    message: Batch exceeds maximum size of 1000 records
+                missing_records:
+                  summary: Records array missing
+                  value:
+                    status: error
+                    error_code: MISSING_FIELD
+                    message: records is required
+
+  /corporate_registrations/batch/{job_id}:
+    get:
+      tags:
+        - Registration
+      summary: Retrieve corporate batch processing status
+      description: |
+        Retrieves the current processing status and results of a previously
+        submitted corporate batch job.
+
+        Typical lifecycle:
+          - pending
+          - processing
+          - completed
+          - failed
+      operationId: getCorporateBatchStatus
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: Batch job identifier returned by the corporate batch endpoint.
+          schema:
+            type: string
+            example: cbatch_123456
+      responses:
+        "200":
+          description: Batch status retrieved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchStatusResponse"
+              examples:
+                completed:
+                  summary: Corporate batch completed
+                  value:
+                    job_id: cbatch_123456
+                    status: completed
+                    total_records: 1
+                    processed_records: 1
+                    successful_records: 1
+                    failed_records: 0
+                    results:
+                      - msisdn: "256712345679"
+                        status: accepted
+                        reason_code: REGISTRATION_ACCEPTED
+                        verification_reference: vrf_01JBK8XS4U7B1DJ6
+                        error_message: null
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          description: No batch job exists for the supplied job_id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                not_found:
+                  summary: Unknown job ID
+                  value:
+                    status: error
+                    error_code: NOT_FOUND
+                    message: Job not found
+
+  /individual_registrations/{msisdn}/ownership_change:
+    post:
+      tags:
+        - Registration
+      summary: Transfer a SIM to a new subscriber
+      description: |
+        Moves the SIM card from the current subscriber to a different one.
+
+        The NEW owner must hold a verification_reference from
+        POST /identity_verification. The ownership limit of the new owner is
+        evaluated before the transfer is accepted.
+
+        The system takes NO biometric from the previous owner. That person is
+        frequently unable to give one, and the identity that matters is the
+        identity of the person who takes the SIM card.
+
+        The record of the previous owner is superseded and kept. After the
+        transfer, the history of the number still shows who held it before.
+
+        The old row ends and the new row begins in one operation. Either both
+        happen, or neither happens.
+      operationId: changeIndividualOwnership
+      parameters:
+        - name: msisdn
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^2567\d{8}$'
+            example: "256712345678"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OwnershipChangeRequest"
+      responses:
+        "200":
+          description: Ownership transferred.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnershipChangeResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          description: |
+            The verification_reference is missing, invalid, expired, or belongs
+            to a different identity. Or the new owner is at the ownership limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                new_owner_at_limit:
+                  value:
+                    status: error
+                    error_code: LIMIT_EXCEEDED
+                    message: New owner has exceeded SIM ownership limit
+                consent_missing:
+                  value:
+                    status: error
+                    error_code: CONSENT_REQUIRED
+                    message: previous_owner_consent is required
+        "404":
+          description: No active registration for this MSISDN under the calling operator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The registration is not active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /individual_registrations/{msisdn}/deregistration:
+    post:
+      tags:
+        - Registration
+      summary: End a SIM registration
+      description: |
+        Ends the registration. The SIM card leaves the ownership count at once.
+
+        There is no waiting time. A subscriber who loses a handset can
+        de-register and register a replacement on the same day.
+
+        This operation needs NO verification and NO biometric. The API key
+        already limits the operator to its own records.
+
+        The record is kept. It is no longer counted. A second call on the same
+        MSISDN returns 409.
+
+        The MSISDN can be registered again later as a NEW registration. Operators
+        re-use numbers, and this is normal.
+      operationId: deregisterIndividualRegistration
+      parameters:
+        - name: msisdn
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^2567\d{8}$'
+            example: "256712345678"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeregistrationRequest"
+      responses:
+        "200":
+          description: Registration ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeregistrationResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          description: No active registration for this MSISDN under the calling operator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The registration already ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                already_ended:
+                  value:
+                    status: error
+                    error_code: DUPLICATE_REQUEST
+                    message: Registration is already deregistered
+
+  /compliance_report:
+    get:
+      tags:
+        - Compliance
+      summary: Retrieve compliance report
+      description: |
+        Returns summary statistics about SIM registration compliance.
+
+        This endpoint is intended to support:
+          - operator compliance monitoring
+          - regulator oversight
+          - data quality improvement programs
+
+        The counts are scoped to the MNO that owns the API key, and the result is
+        cached for 5 minutes, so very recent registrations may not be reflected yet.
+      operationId: getComplianceReport
+      responses:
+        "200":
+          description: Compliance report returned successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComplianceReportResponse"
+              examples:
+                report:
+                  summary: Standard compliance report
+                  value:
+                    status: success
+                    data:
+                      valid_records: 12000
+                      invalid_records: 340
+                      missing_information: 87
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key used to authenticate MNO requests.
+
+  responses:
+    UnauthorizedError:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            unauthorized:
+              summary: No valid API key supplied
+              value:
+                status: error
+                error_code: UNAUTHORIZED
+                message: Invalid or missing API key
+
+  schemas:
+    ReasonCode:
+      type: string
+      description: Standardized reason code for validation and business outcomes.
+      enum:
+        - LIMIT_EXCEEDED
+        - LIMIT_NOT_EXCEEDED
+        - IDENTITY_ACCEPTED
+        - IDENTITY_REJECTED
+        - REGISTRATION_ACCEPTED
+        - VERIFICATION_UNAVAILABLE
+        - VERIFICATION_REQUIRED
+        - VERIFICATION_REFERENCE_INVALID
+        - VERIFICATION_REFERENCE_MISMATCH
+        - VERIFICATION_REFERENCE_EXPIRED
+        - REGISTRATION_AMENDED
+        - REGISTRATION_DEREGISTERED
+        - OWNERSHIP_CHANGED
+        - FIELD_NOT_AMENDABLE
+        - REGISTRATION_NOT_ACTIVE
+        - CONSENT_REQUIRED
+        - UNAUTHORIZED
+        - INVALID_FIELD
+        - INVALID_ID
+        - INVALID_MSISDN
+        - INVALID_AGENT
+        - INVALID_BIOMETRIC
+        - MISSING_FIELD
+        - DUPLICATE_REQUEST
+        - INVALID_PAYLOAD
+        - NOT_FOUND
+        - SYSTEM_ERROR
+
+    IndividualIdType:
+      type: string
+      description: |
+        Identity document of a NATURAL PERSON. Selects the authority that
+        verifies them.
+
+          NATIONAL ID  -> NIRA   (live)
+          REFUGEE ID   -> UNHCR  (live)
+          PASSPORT     -> NCIC   (planned, not yet integrated)
+
+        Reduced from seven values to three in 2.0.0. ALIEN ID, ATTESTATION,
+        ASYLUM and DIPLOMAT ID were removed — see the migration note issued with
+        this release for the replacement value in each case.
+      enum:
+        - NATIONAL ID
+        - REFUGEE ID
+        - PASSPORT
+      example: NATIONAL ID
+
+    OrganisationIdType:
+      type: string
+      description: |
+        Registration document of an ORGANISATION. Selects the registry that
+        verifies it.
+
+        No registry is integrated yet, so every organisation verification
+        currently returns VERIFICATION_UNAVAILABLE.
+
+          COI               -> URSB   (planned)
+                               Certificate of Incorporation. Applies to
+                               organisation_type COMPANY and BUSINESS.
+
+          REGISTRY_PENDING  -> none   (planned)
+                               Every other organisation_type. UCC has not yet
+                               decided which authority verifies NGOs, trusts,
+                               cooperatives, ministries, departments,
+                               authorities, government agencies, foreign
+                               missions, or regional and international
+                               organisations. Some of these hold no
+                               registration document at all.
+
+        REGISTRY_PENDING is a placeholder. When UCC names a registry, a specific
+        value is ADDED, which is backwards compatible. Naming registries now and
+        renaming them later would not be.
+      enum:
+        - COI
+        - REGISTRY_PENDING
+      example: COI
+
+    IdType:
+      type: string
+      description: |
+        Any identity document, individual or organisational.
+
+        Used only where a request may carry either — POST /ownership_check and
+        POST /identity_verification. Which values are valid depends on
+        subscriber_type.
+
+        Record schemas use the specific type instead: IndividualIdType for a
+        natural person, OrganisationIdType for an organisation.
+      enum:
+        - NATIONAL ID
+        - REFUGEE ID
+        - PASSPORT
+        - COI
+        - REGISTRY_PENDING
+      example: NATIONAL ID
+
+    OwnershipCheckRequest:
+      type: object
+      description: |
+        Request payload for ownership eligibility checks.
+
+        Required fields vary by subscriber_type:
+          - individual: subscriber_type, id_type, id_number
+          - corporate:  subscriber_type, id_type (COI), registration_number
+      required:
+        - subscriber_type
+      properties:
+        subscriber_type:
+          type: string
+          description: |
+            Indicates whether this is an individual or corporate ownership check.
+            This determines which fields are required and which count of SIM
+            registrations is evaluated against the ownership limit.
+          enum:
+            - individual
+            - corporate
+          example: individual
+        id_type:
+          allOf:
+            - $ref: "#/components/schemas/IdType"
+          description: |
+            Subscriber identity document type. Required when subscriber_type is individual.
+        id_number:
+          type: string
+          description: |
+            Subscriber identity document number. Required when subscriber_type is individual.
+          example: CF123456789ABCDE
+        registration_number:
+          type: string
+          description: |
+            Company registration number as issued by the registrar. Required when
+            subscriber_type is corporate. The ownership count is evaluated against
+            all accepted CorporateRegistration records for this number.
+          example: "80020001234"
+
+    OwnershipCheckResponse:
+      type: object
+      description: Response returned after ownership eligibility evaluation.
+      required:
+        - status
+        - data
+      properties:
+        status:
+          type: string
+          description: Overall request status.
+          example: success
+        data:
+          type: object
+          description: Ownership eligibility outcome.
+          required:
+            - allowed
+            - reason_code
+            - message
+          properties:
+            allowed:
+              type: boolean
+              description: Whether subscriber can proceed with registration.
+              example: true
+            reason_code:
+              $ref: "#/components/schemas/ReasonCode"
+            message:
+              type: string
+              description: Human-readable explanation of the decision.
+              example: Subscriber can register SIM
+            current_count:
+              type: integer
+              description: |
+                Number of accepted SIM registrations currently linked to this
+                subscriber.
+              example: 2
+            limit:
+              type: integer
+              description: |
+                The resolved ownership limit for this subscriber. This response is
+                the source of truth — MNO systems must not hard-code thresholds.
+              example: 5
+
+    BiometricData:
+      description: |
+        Biometric payload. Appears ONLY on POST /identity_verification — never on
+        a registration endpoint. The `format` field selects the shape:
+
+          - MOSIP_SBI_SIGNED — the block produced and signed by a MOSIP-certified
+            SBI capture device. Required for NATIONAL ID (NIRA). UCC relays it
+            unmodified and does not parse, validate or reshape it.
+          - ISO_19794_4 / ISO_19794_6 — an ISO biometric IMAGE record produced by
+            the operator capture SDK. Used for UNHCR and any future provider that
+            accepts ISO records.
+
+        Biometric data is processed transiently and is never persisted.
+      oneOf:
+        - $ref: "#/components/schemas/IsoImageBiometric"
+        - $ref: "#/components/schemas/SignedBlockBiometric"
+      discriminator:
+        propertyName: format
+        mapping:
+          ISO_19794_4: "#/components/schemas/IsoImageBiometric"
+          ISO_19794_6: "#/components/schemas/IsoImageBiometric"
+          MOSIP_SBI_SIGNED: "#/components/schemas/SignedBlockBiometric"
+
+    IsoImageBiometric:
+      type: object
+      description: |
+        An ISO biometric IMAGE record, Base64 encoded.
+
+        This is an image record, NOT a minutiae template. ISO/IEC 19794-4 defines
+        finger image data; ISO/IEC 19794-6 defines iris image data. Send the full
+        ISO record produced by the capture SDK. Do not send extracted minutiae,
+        and do not send a bare JPEG or PNG file.
+      required:
+        - biometric_type
+        - format
+        - data
+      properties:
+        biometric_type:
+          type: string
+          description: Biometric modality.
+          enum:
+            - FINGERPRINT
+            - IRIS
+          example: FINGERPRINT
+        format:
+          type: string
+          description: |
+            Must agree with biometric_type. Use ISO_19794_4 with FINGERPRINT and
+            ISO_19794_6 with IRIS.
+          enum:
+            - ISO_19794_4
+            - ISO_19794_6
+          example: ISO_19794_4
+        data:
+          type: string
+          description: |
+            Base64-encoded ISO biometric image record. Processed transiently and
+            never persisted.
+          example: Uk9OQVBJU08xOTc5NDQAAAAA...
+
+    SignedBlockBiometric:
+      type: object
+      description: |
+        The biometric block produced and signed by a MOSIP-certified SBI device.
+        UCC relays it to NIRA without modification. The MOSIP SBI specification
+        defines the structure inside the block — this API does not. Do not alter
+        the block after capture, or NIRA signature verification will fail.
+
+        The block must reach NIRA within about 30 seconds of capture, and its
+        signed transactionId must equal the request `transaction_id`.
+      required:
+        - biometric_type
+        - format
+        - blocks
+      properties:
+        biometric_type:
+          type: string
+          description: Biometric modality.
+          enum:
+            - FINGERPRINT
+            - IRIS
+          example: FINGERPRINT
+        format:
+          type: string
+          description: Device-signed MOSIP SBI block.
+          enum:
+            - MOSIP_SBI_SIGNED
+          example: MOSIP_SBI_SIGNED
+        blocks:
+          type: array
+          minItems: 1
+          description: |
+            The `biometrics` array exactly as returned by the SBI device. Relayed
+            opaquely; all fields are preserved.
+          items:
+            type: object
+            additionalProperties: true
+
+    IdentityVerificationRequest:
+      type: object
+      description: |
+        Request to verify a subscriber against the authority that owns their
+        record. The id_type value selects the provider.
+
+        The ownership limit is evaluated BEFORE the provider is called, so an
+        over-limit subscriber never incurs a provider charge.
+
+        `biometric` is required for every id_type whose provider is live. It is
+        optional for PASSPORT while NCIC is not integrated, because nothing would
+        validate or store it.
+      required:
+        - id_type
+        - id_number
+      properties:
+        id_type:
+          $ref: "#/components/schemas/IdType"
+        id_number:
+          type: string
+          description: Subscriber identity document number.
+          example: CF123456789ABCDE
+        transaction_id:
+          type: string
+          pattern: "^[0-9]{10}$"
+          description: |
+            Ten-digit transaction number bound into the signed block at capture
+            time. Required when format is MOSIP_SBI_SIGNED, where NIRA compares it
+            against the block's signed transactionId. Ignored by other providers.
+          example: "9181672570"
+        visa_validity:
+          type: string
+          format: date
+          nullable: true
+          description: |
+            Visa expiry date. Supplied when id_type is PASSPORT, so the visa
+            validity is recorded alongside the identity check. Ignored for
+            other id_type values.
+          example: "2027-06-30"
+        biometric:
+          $ref: "#/components/schemas/BiometricData"
+
+    IdentityVerificationResponse:
+      type: object
+      description: |
+        Verification outcome. A biometric that does not match is a SUCCESSFUL
+        request with verified=false — it is not an HTTP error. Only a live
+        provider returning a positive match yields verified=true.
+      required:
+        - status
+        - data
+      properties:
+        status:
+          type: string
+          description: Overall request status.
+          example: success
+        data:
+          type: object
+          description: Verification outcome detail.
+          required:
+            - verified
+            - reason_code
+            - message
+            - provider
+          properties:
+            verified:
+              type: boolean
+              description: Whether the provider confirmed the subscriber.
+              example: true
+            reason_code:
+              $ref: "#/components/schemas/ReasonCode"
+            message:
+              type: string
+              description: Human-readable explanation of the outcome.
+              example: Identity verified
+            provider:
+              type: string
+              description: The authority the request was routed to.
+              enum:
+                - NIRA
+                - UNHCR
+                - NCIC
+                - URSB
+              example: NIRA
+            provider_status:
+              type: string
+              description: |
+                Present when the routed provider is not yet integrated. Such a
+                provider returns verified=false with reason_code
+                VERIFICATION_UNAVAILABLE, and still issues a reference so the
+                registration can proceed and be recorded as unverified.
+              enum:
+                - LIVE
+                - PLANNED
+              example: PLANNED
+            verification_reference:
+              type: string
+              description: |
+                Send this value on the subsequent registration request. It is
+                bound to the id_type and id_number verified here, and is rejected
+                if presented with a different identity. Valid for 24 hours and
+                reusable within that window.
+              example: vrf_01JBK2QX7M4T8ZC3
+            verified_at:
+              type: string
+              format: date-time
+              description: UTC time at which verification completed.
+              example: "2026-08-24T09:14:22.481Z"
+            expires_at:
+              type: string
+              format: date-time
+              description: UTC time after which the reference is no longer accepted.
+              example: "2026-08-25T09:14:22.481Z"
+            matched_attributes:
+              type: object
+              description: |
+                Attributes the provider was able to corroborate. Provider
+                capabilities are asymmetric — UNHCR can validate date of birth and
+                returns sex, while NIRA returns only a match decision and this
+                object is omitted.
+              additionalProperties: true
+              example:
+                date_of_birth: MATCH
+                sex: F
+
+    IndividualIdentity:
+      type: object
+      description: Individual identity details used for validation.
+      required:
+        - id_type
+        - id_number
+        - nationality
+        - surname
+        - given_name
+        - gender
+        - date_of_birth
+      properties:
+        id_type:
+          $ref: "#/components/schemas/IndividualIdType"
+        id_number:
+          type: string
+          description: Subscriber identity number.
+          example: CF123456789ABCDE
+        nationality:
+          type: string
+          description: Subscriber nationality.
+          example: UGANDAN
+        id_validity:
+          type: string
+          format: date
+          nullable: true
+          description: Identity validity date where applicable.
+          example: "2030-12-31"
+        visa_permit_number:
+          type: string
+          nullable: true
+          description: Visa or permit number where applicable.
+          example: VISA12345
+        visa_validity:
+          type: string
+          format: date
+          nullable: true
+          description: Visa or permit validity date where applicable.
+          example: "2027-06-30"
+        surname:
+          type: string
+          description: Subscriber surname as it appears on the identity document.
+          example: KATO
+        given_name:
+          type: string
+          description: Subscriber given name as it appears on the identity document.
+          example: JOHN
+        gender:
+          type: string
+          description: Subscriber gender.
+          enum:
+            - MALE
+            - FEMALE
+            - UNDEFINED
+          example: MALE
+        date_of_birth:
+          type: string
+          format: date
+          description: Subscriber date of birth.
+          example: "1995-05-12"
+
+    AgentDetails:
+      type: object
+      description: Registration point or agent information.
+      required:
+        - agent_code
+        - agent_number
+        - sales_district
+        - gps_coordinates
+        - activation_date
+      properties:
+        agent_code:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Agent code in uppercase alphanumeric format.
+          example: AGT001
+        agent_number:
+          type: string
+          pattern: '^2567\d{8}$'
+          description: Agent contact number in international format.
+          example: "256712345678"
+        sales_district:
+          type: string
+          description: Sales district in uppercase.
+          example: KAMPALA
+        gps_coordinates:
+          type: string
+          description: GPS coordinates represented as longitude,latitude.
+          example: "32.5825,0.3476"
+        activation_date:
+          type: string
+          format: date
+          description: Activation date for the registration point or agent.
+          example: "2025-10-01"
+
+    IndividualRegistrationRecord:
+      type: object
+      description: |
+        Full individual SIM registration payload.
+
+        Carries a verification_reference and NO biometric data. Used by
+        POST /individual_registrations, by PUT updates, and as the record shape inside
+        POST /individual_registrations/batch.
+      required:
+        - verification_reference
+        - msisdn
+        - sim_registration_type
+        - sim_type
+        - sim_registration_datetime
+        - id_type
+        - id_number
+        - nationality
+        - surname
+        - given_name
+        - gender
+        - date_of_birth
+        - agent_code
+        - agent_number
+        - sales_district
+        - gps_coordinates
+        - activation_date
+      properties:
+        verification_reference:
+          type: string
+          description: |
+            Reference issued by POST /identity_verification. Must be bound to the
+            id_type and id_number in this request, and must not have expired. The
+            ownership limit is re-evaluated at commit time regardless.
+          example: vrf_01JBK2QX7M4T8ZC3
+        msisdn:
+          type: string
+          pattern: '^2567\d{8}$'
+          description: Subscriber MSISDN in international format.
+          example: "256712345678"
+        sim_registration_type:
+          type: string
+          description: |
+            Type of registration event. RE_REGISTRATION is used with
+            PUT /individual_registrations/{msisdn}, where the same subscriber
+            proves their identity again.
+          enum:
+            - NEW
+            - SIM SWAP
+            - RE_REGISTRATION
+          example: NEW
+        sim_type:
+          type: string
+          description: Type of SIM being registered.
+          enum:
+            - SIM
+            - ESIM
+            - ISIM
+          example: SIM
+        sim_registration_datetime:
+          type: string
+          format: date-time
+          description: Date and time of registration.
+          example: "2025-11-01T10:22:00Z"
+        id_type:
+          $ref: "#/components/schemas/IndividualIdType"
+        id_number:
+          type: string
+          description: Subscriber identity number.
+          example: CF123456789ABCDE
+        nationality:
+          type: string
+          description: Subscriber nationality.
+          example: UGANDAN
+        id_validity:
+          type: string
+          format: date
+          nullable: true
+          description: Identity validity date where applicable.
+          example: "2030-12-31"
+        visa_permit_number:
+          type: string
+          nullable: true
+          description: Visa or permit number where applicable.
+          example: VISA12345
+        visa_validity:
+          type: string
+          format: date
+          nullable: true
+          description: Visa or permit validity where applicable.
+          example: "2027-06-30"
+        surname:
+          type: string
+          description: Subscriber surname.
+          example: KATO
+        given_name:
+          type: string
+          description: Subscriber given name.
+          example: JOHN
+        gender:
+          type: string
+          description: Subscriber gender.
+          enum:
+            - MALE
+            - FEMALE
+            - UNDEFINED
+          example: MALE
+        date_of_birth:
+          type: string
+          format: date
+          description: Subscriber date of birth.
+          example: "1995-05-12"
+        agent_code:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Registration agent code.
+          example: AGT001
+        agent_number:
+          type: string
+          pattern: '^2567\d{8}$'
+          description: Registration agent number.
+          example: "256712345678"
+        sales_district:
+          type: string
+          description: Sales district.
+          example: KAMPALA
+        gps_coordinates:
+          type: string
+          description: GPS coordinates for registration location.
+          example: "32.5825,0.3476"
+        activation_date:
+          type: string
+          format: date
+          description: Agent activation date.
+          example: "2025-10-01"
+
+    IndividualRegistrationRequest:
+      description: |
+        Full individual SIM registration payload for POST /individual_registrations.
+        Identical to IndividualRegistrationRecord — the eligibility_token that previously
+        distinguished them was removed in 2.0.0.
+      allOf:
+        - $ref: "#/components/schemas/IndividualRegistrationRecord"
+
+    CorporateRepresentative:
+      type: object
+      description: |
+        Representative details for a corporate registration.
+
+        RECORDED BUT NOT VERIFIED. No identity or biometric check is performed on
+        this person. The ORGANISATION is what gets verified.
+
+        These fields remain required because they are the only accountability
+        anchor on a corporate SIM. Without them a corporate line traces to a
+        company and no further, and a company can be a shell.
+      required:
+        - id_type
+        - id_number
+        - nationality
+        - surname
+        - given_name
+        - gender
+        - date_of_birth
+      properties:
+        id_type:
+          $ref: "#/components/schemas/IndividualIdType"
+        id_number:
+          type: string
+          description: Representative identity number.
+          example: CF123456789ABCDE
+        validity:
+          type: string
+          format: date
+          nullable: true
+          description: Identity validity date where applicable.
+          example: "2030-12-31"
+        nationality:
+          type: string
+          description: Representative nationality.
+          example: UGANDAN
+        surname:
+          type: string
+          description: Representative surname.
+          example: KATO
+        given_name:
+          type: string
+          description: Representative given name.
+          example: JOHN
+        gender:
+          type: string
+          description: Representative gender.
+          enum:
+            - MALE
+            - FEMALE
+            - UNDEFINED
+          example: MALE
+        date_of_birth:
+          type: string
+          format: date
+          description: Representative date of birth.
+          example: "1983-05-12"
+
+    CorporateRegistrationRecord:
+      type: object
+      description: |
+        Full corporate SIM registration record.
+
+        Used by POST /corporate_registrations and as the record shape inside
+        POST /corporate_registrations/batch. Carries a verification_reference for
+        the nominated representative and no biometric data.
+      required:
+        - verification_reference
+        - id_type
+        - msisdn
+        - sim_type
+        - sim_registration_type
+        - sim_registration_datetime
+        - organisation_type
+        - registration_number
+        - organisation_name
+        - registered_address
+        - tax_identification_number
+        - contact_number
+        - representative
+        - agent_code
+        - agent_number
+        - sales_district
+        - gps_coordinates
+        - activation_date
+      properties:
+        verification_reference:
+          type: string
+          description: |
+            Reference issued by POST /identity_verification for the ORGANISATION.
+            Must be bound to the id_type and registration_number in this request,
+            and must not have expired.
+
+            It is NOT the representative's reference. The representative is no
+            longer verified.
+          example: vrf_01JBK8XS4U7B1DJ6
+        id_type:
+          allOf:
+            - $ref: "#/components/schemas/OrganisationIdType"
+          description: |
+            Registration document of the organisation. Must match the id_type
+            carried by the verification_reference.
+        msisdn:
+          type: string
+          pattern: '^2567\d{8}$'
+          description: Corporate contact MSISDN in international format.
+          example: "256712345679"
+        sim_type:
+          type: string
+          description: SIM type.
+          enum:
+            - SIM
+            - ESIM
+            - ISIM
+          example: SIM
+        sim_registration_type:
+          type: string
+          description: Registration event type.
+          enum:
+            - NEW
+            - SIM SWAP
+          example: NEW
+        sim_registration_datetime:
+          type: string
+          format: date-time
+          description: Date and time of registration.
+          example: "2025-11-01T10:22:00Z"
+        organisation_type:
+          type: string
+          description: Category of organisation.
+          enum:
+            - COMPANY
+            - BUSINESS
+            - TRUST
+            - COOPERATIVE
+            - NGO
+            - GOVERNMENT AGENCY
+            - MINISTRY
+            - DEPARTMENT
+            - AUTHORITY
+            - FOREIGN MISSION
+            - REGIONAL ORGANISATION
+            - INTERNATIONAL ORGANISATION
+          example: COMPANY
+        registration_number:
+          type: string
+          description: Organisation registration number.
+          example: "80020012345678"
+        registration_validity:
+          type: string
+          format: date
+          nullable: true
+          description: Registration validity date where applicable.
+          example: "2028-12-31"
+        organisation_name:
+          type: string
+          description: Official organisation name.
+          example: ABC LIMITED
+        registered_address:
+          type: string
+          description: Official registered address.
+          example: KAMPALA ROAD
+        tax_identification_number:
+          type: string
+          description: Tax identification number.
+          example: TIN123456
+        contact_number:
+          type: string
+          pattern: '^2567\d{8}$'
+          description: Organisation contact number.
+          example: "256712345679"
+        representative:
+          $ref: "#/components/schemas/CorporateRepresentative"
+        agent_code:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Registration agent code.
+          example: AGT001
+        agent_number:
+          type: string
+          pattern: '^2567\d{8}$'
+          description: Registration agent number.
+          example: "256712345678"
+        sales_district:
+          type: string
+          description: Sales district.
+          example: KAMPALA
+        gps_coordinates:
+          type: string
+          description: GPS coordinates for registration location.
+          example: "32.5825,0.3476"
+        activation_date:
+          type: string
+          format: date
+          description: Agent activation date.
+          example: "2025-10-01"
+
+    CorporateRegistrationRequest:
+      description: |
+        Full corporate SIM registration payload for POST /corporate_registrations.
+        Identical to CorporateRegistrationRecord.
+      allOf:
+        - $ref: "#/components/schemas/CorporateRegistrationRecord"
+
+    IndividualBatchRegistrationRequest:
+      type: object
+      description: |
+        Batch payload containing multiple individual registration records.
+
+        Every record carries its own verification_reference and no biometric
+        data. Identity verification is real time and per subscriber, and is never
+        performed as part of a batch.
+      required:
+        - records
+      properties:
+        records:
+          type: array
+          description: List of registration records to process.
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/IndividualRegistrationRecord"
+
+    CorporateBatchRegistrationRequest:
+      type: object
+      description: |
+        Batch payload containing multiple corporate registration records.
+
+        Every record carries its own verification_reference for its nominated
+        representative, and no biometric data. Identity verification is real time
+        and per subscriber, and is never performed as part of a batch.
+      required:
+        - records
+      properties:
+        records:
+          type: array
+          description: List of corporate registration records to process.
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/CorporateRegistrationRecord"
+
+    BatchAcceptedResponse:
+      type: object
+      description: Response returned when a batch has been accepted for asynchronous processing.
+      required:
+        - status
+        - job_id
+        - message
+      properties:
+        status:
+          type: string
+          description: Request status.
+          example: accepted
+        job_id:
+          type: string
+          description: Unique batch job identifier.
+          example: batch_123456
+        message:
+          type: string
+          description: Human-readable status message.
+          example: Batch accepted for processing
+
+    BatchResultItem:
+      type: object
+      description: Per-record result item for a processed batch.
+      required:
+        - msisdn
+        - status
+        - reason_code
+      properties:
+        msisdn:
+          type: string
+          description: MSISDN of the processed record.
+          example: "256712345678"
+        status:
+          type: string
+          description: Record-level outcome.
+          enum:
+            - accepted
+            - rejected
+          example: accepted
+        reason_code:
+          $ref: "#/components/schemas/ReasonCode"
+        verification_reference:
+          type: string
+          nullable: true
+          description: |
+            The reference that authorised this record, echoed back so each result
+            can be traced to the verification it came from.
+          example: vrf_01JBK2QX7M4T8ZC3
+        error_message:
+          type: string
+          nullable: true
+          description: Detailed human-readable message for rejected records.
+          example: Invalid MSISDN format
+
+    BatchStatusResponse:
+      type: object
+      description: Current status of a submitted batch job.
+      required:
+        - job_id
+        - status
+        - total_records
+        - processed_records
+        - successful_records
+        - failed_records
+        - results
+      properties:
+        job_id:
+          type: string
+          description: Batch job identifier.
+          example: batch_123456
+        status:
+          type: string
+          description: Processing lifecycle state.
+          enum:
+            - pending
+            - processing
+            - completed
+            - failed
+          example: completed
+        total_records:
+          type: integer
+          description: Total number of submitted records.
+          example: 100
+        processed_records:
+          type: integer
+          description: Number of records processed so far.
+          example: 100
+        successful_records:
+          type: integer
+          description: Number of successfully accepted records.
+          example: 95
+        failed_records:
+          type: integer
+          description: Number of rejected records.
+          example: 5
+        results:
+          type: array
+          description: Per-record results, typically present on completion.
+          items:
+            $ref: "#/components/schemas/BatchResultItem"
+
+    BatchCompletedEvent:
+      type: object
+      description: |
+        Body of the batch completion notification POSTed to the operator's
+        registered callback URL.
+
+        Summary counters only — per-record outcomes are never included. Fetch
+        those from GET /individual_registrations/batch/{job_id} using the job_id below.
+      required:
+        - event
+        - job_id
+        - status
+        - total_records
+        - processed_records
+        - successful_records
+        - failed_records
+        - timestamp
+      properties:
+        event:
+          type: string
+          description: |
+            Event type. `batch.completed` is emitted for both terminal states;
+            read `status` to distinguish success from failure.
+          enum:
+            - batch.completed
+          example: batch.completed
+        job_id:
+          type: string
+          description: |
+            Batch job identifier, matching the job_id returned by the batch
+            submission endpoint. Use it as the idempotency key when processing
+            this notification.
+          example: batch_123456
+        status:
+          type: string
+          description: |
+            Terminal state of the batch job. `failed` indicates the job aborted
+            on a processing error; counters may be zero and results incomplete.
+          enum:
+            - completed
+            - failed
+          example: completed
+        total_records:
+          type: integer
+          description: Total number of records in the submitted batch.
+          example: 100
+        processed_records:
+          type: integer
+          description: Number of records processed.
+          example: 100
+        successful_records:
+          type: integer
+          description: Number of records accepted.
+          example: 95
+        failed_records:
+          type: integer
+          description: Number of records rejected.
+          example: 5
+        timestamp:
+          type: string
+          format: date-time
+          description: UTC time at which the notification was generated (ISO 8601).
+          example: "2026-07-31T10:25:00Z"
+
+    AmendableFields:
+      type: object
+      description: |
+        The complete set of fields an amendment may change. Any other field is
+        refused with FIELD_NOT_AMENDABLE.
+
+        date_of_birth and nationality are absent on purpose. A wrong date of
+        birth is usually the record of a different person, and a change of
+        nationality gives a new identity document. Both are re-registrations.
+
+        id_type, id_number, msisdn and mno_id are absent because they identify
+        the record. A change to them is an ownership change, and mno_id must
+        never change at all.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        surname:
+          type: string
+          example: MUKASA
+        given_name:
+          type: string
+          example: GRACE
+        gender:
+          type: string
+          enum:
+            - MALE
+            - FEMALE
+            - UNDEFINED
+          example: FEMALE
+        id_validity:
+          type: string
+          format: date
+          description: New expiry date after the subscriber renewed the same document.
+          example: "2031-12-31"
+        visa_validity:
+          type: string
+          format: date
+          example: "2028-06-30"
+        visa_permit_number:
+          type: string
+          example: VISA67890
+
+    AmendmentRequest:
+      type: object
+      description: |
+        Amendment of the details of the same subscriber. No verification
+        reference is needed, because the identity of the record does not change.
+      required:
+        - change_reason
+        - changes
+      properties:
+        change_reason:
+          type: string
+          description: |
+            Why the details changed. LEGAL_NAME_CHANGE covers marriage and deed
+            poll. CORRECTION covers an error made at registration.
+            DOCUMENT_RENEWAL covers a renewed ID or visa.
+          enum:
+            - LEGAL_NAME_CHANGE
+            - CORRECTION
+            - DOCUMENT_RENEWAL
+          example: LEGAL_NAME_CHANGE
+        evidence_reference:
+          type: string
+          nullable: true
+          description: |
+            Reference of the supporting document, where the operator holds one.
+            A marriage certificate number, for example. UCC records this value
+            and can ask for the document in an audit.
+          example: MC/2026/004412
+        changes:
+          $ref: "#/components/schemas/AmendableFields"
+
+    AmendmentResponse:
+      type: object
+      required:
+        - status
+        - reason_code
+        - message
+      properties:
+        status:
+          type: string
+          example: amended
+        reason_code:
+          $ref: "#/components/schemas/ReasonCode"
+        message:
+          type: string
+          example: Subscriber details amended
+        previous_values:
+          type: object
+          description: |
+            The values before the amendment, for the fields that changed. The
+            operator can show the agent what the change replaced.
+          additionalProperties: true
+          example:
+            surname: AYO
+
+    PreviousOwnerConsent:
+      type: object
+      description: |
+        Evidence that the previous owner agreed to the transfer. UCC records
+        this evidence. UCC does not verify it, and can ask for it in an audit.
+        The operator carries the responsibility for the statement.
+      required:
+        - method
+        - obtained_at
+      properties:
+        method:
+          type: string
+          description: |
+            SUBSCRIBER_CONFIRMED means the person answered on the line itself.
+            This is the preferred method, because that person holds the SIM card.
+            SIGNED_FORM means the person signed at a service centre.
+            SUCCESSION covers a dead subscriber, with a court order or a death
+            certificate. OPERATOR_ATTESTED is the exception, where no other
+            method is possible.
+          enum:
+            - SUBSCRIBER_CONFIRMED
+            - SIGNED_FORM
+            - SUCCESSION
+            - OPERATOR_ATTESTED
+          example: SUBSCRIBER_CONFIRMED
+        reference:
+          type: string
+          nullable: true
+          description: Reference of the evidence. A USSD confirmation code, for example.
+          example: USSD-8837721
+        obtained_at:
+          type: string
+          format: date-time
+          example: "2026-08-26T09:14:00Z"
+
+    NewOwner:
+      type: object
+      description: |
+        Identity of the subscriber who takes the SIM card. These values must
+        agree with the identity in the verification_reference.
+      required:
+        - id_type
+        - id_number
+        - nationality
+        - surname
+        - given_name
+        - gender
+        - date_of_birth
+      properties:
+        id_type:
+          $ref: "#/components/schemas/IndividualIdType"
+        id_number:
+          type: string
+          example: CM20000000001
+        nationality:
+          type: string
+          example: UGANDAN
+        surname:
+          type: string
+          example: OKELLO
+        given_name:
+          type: string
+          example: PETER
+        gender:
+          type: string
+          enum:
+            - MALE
+            - FEMALE
+            - UNDEFINED
+          example: MALE
+        date_of_birth:
+          type: string
+          format: date
+          example: "1990-03-04"
+        id_validity:
+          type: string
+          format: date
+          nullable: true
+          example: "2031-06-30"
+        visa_validity:
+          type: string
+          format: date
+          nullable: true
+          example: "2028-06-30"
+
+    OwnershipChangeRequest:
+      type: object
+      description: |
+        Transfer of a SIM card to a different subscriber. The verification
+        reference belongs to the NEW owner. The system takes no biometric from
+        the previous owner.
+      required:
+        - verification_reference
+        - effective_date
+        - new_owner
+        - previous_owner
+        - agent_code
+        - agent_number
+      properties:
+        verification_reference:
+          type: string
+          description: |
+            Reference issued by POST /identity_verification for the NEW owner.
+            It must be bound to the id_type and id_number in new_owner.
+          example: vrf_01JBK7WR3T6A0CH5
+        effective_date:
+          type: string
+          format: date
+          description: |
+            Date the transfer takes effect. It must not be in the future, and
+            it must not be more than 30 days in the past.
+          example: "2026-08-26"
+        new_owner:
+          $ref: "#/components/schemas/NewOwner"
+        previous_owner_consent:
+          $ref: "#/components/schemas/PreviousOwnerConsent"
+        agent_code:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          example: AGT001
+        agent_number:
+          type: string
+          pattern: '^2567\d{8}$'
+          example: "256712345678"
+
+    OwnershipChangeResponse:
+      type: object
+      required:
+        - status
+        - reason_code
+        - message
+      properties:
+        status:
+          type: string
+          example: transferred
+        reason_code:
+          $ref: "#/components/schemas/ReasonCode"
+        message:
+          type: string
+          example: SIM ownership transferred
+        previous_owner:
+          type: object
+          description: |
+            Identity of the subscriber who held the SIM card before. The full
+            record stays readable in the history of the number.
+          properties:
+            id_type:
+              $ref: "#/components/schemas/IndividualIdType"
+            id_number:
+              type: string
+              example: CF123456789ABCDE
+        effective_date:
+          type: string
+          format: date
+          example: "2026-08-26"
+
+    DeregistrationRequest:
+      type: object
+      description: |
+        End of a registration. The SIM card leaves the ownership count at the
+        moment of this call.
+      required:
+        - reason_code
+        - effective_date
+        - agent_code
+        - agent_number
+      properties:
+        reason_code:
+          type: string
+          description: |
+            Why the registration ends. 
+          enum:
+            - SUBSCRIBER_REQUEST
+            - CHURN
+            - FRAUD
+            - DECEASED
+            - SIM_RECYCLED
+          example: SUBSCRIBER_REQUEST
+        effective_date:
+          type: string
+          format: date
+          description: |
+            Date the registration ends. It must not be in the future, and it
+            must not be more than 30 days in the past. The ownership count falls
+            at the moment of the call, and not on this date.
+          example: "2026-08-26"
+        agent_code:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          example: AGT001
+        agent_number:
+          type: string
+          pattern: '^2567\d{8}$'
+          example: "256712345678"
+        notes:
+          type: string
+          nullable: true
+          example: Subscriber reported the handset as stolen
+
+    DeregistrationResponse:
+      type: object
+      required:
+        - status
+        - reason_code
+        - message
+      properties:
+        status:
+          type: string
+          example: deregistered
+        reason_code:
+          $ref: "#/components/schemas/ReasonCode"
+        message:
+          type: string
+          example: SIM registration ended
+        effective_date:
+          type: string
+          format: date
+          example: "2026-08-26"
+        released_count:
+          type: integer
+          description: |
+            How many places this call freed in the ownership count of the
+            subscriber. It is always 1 today. It is present so that a future
+            batch response can use the same shape.
+          example: 1
+
+    RegistrationHistoryEntry:
+      type: object
+      description: |
+        One row in the history of an MSISDN. The chain of these rows answers the
+        question "who held this number on a given date". This schema supports
+        the history endpoint, which is still an open item.
+      required:
+        - status
+        - id_type
+        - id_number
+        - effective_from
+      properties:
+        status:
+          type: string
+          enum:
+            - active
+            - superseded
+            - deregistered
+          example: superseded
+        id_type:
+          $ref: "#/components/schemas/IndividualIdType"
+        id_number:
+          type: string
+          example: CF123456789ABCDE
+        surname:
+          type: string
+          example: KATO
+        given_name:
+          type: string
+          example: JOHN
+        effective_from:
+          type: string
+          format: date-time
+          example: "2025-11-01T10:22:00Z"
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Empty while the row is active.
+          example: "2026-08-26T09:20:00Z"
+        supersede_reason:
+          type: string
+          nullable: true
+          enum:
+            - RE_REGISTRATION
+            - AMENDMENT
+            - OWNERSHIP_CHANGE
+            - DEREGISTRATION
+          example: OWNERSHIP_CHANGE
+
+    ComplianceReportResponse:
+      type: object
+      description: Summary compliance report response.
+      required:
+        - status
+        - data
+      properties:
+        status:
+          type: string
+          description: Report request status.
+          example: success
+        data:
+          type: object
+          description: Compliance summary data.
+          required:
+            - valid_records
+            - invalid_records
+            - missing_information
+          properties:
+            valid_records:
+              type: integer
+              description: Number of records classified as valid.
+              example: 12000
+            invalid_records:
+              type: integer
+              description: Number of records classified as invalid.
+              example: 340
+            missing_information:
+              type: integer
+              description: Number of records missing required information.
+              example: 87
+
+    StandardResponse:
+      type: object
+      description: Standard success response used by registration endpoints.
+      required:
+        - status
+        - reason_code
+        - message
+      properties:
+        status:
+          type: string
+          description: Request status.
+          example: accepted
+        reason_code:
+          $ref: "#/components/schemas/ReasonCode"
+        message:
+          type: string
+          description: Human-readable response message.
+          example: SIM registration successful
+
+    ErrorResponse:
+      type: object
+      description: Standard error response for request failures.
+      required:
+        - status
+        - error_code
+        - message
+      properties:
+        status:
+          type: string
+          description: Request status.
+          example: error
+        error_code:
+          $ref: "#/components/schemas/ReasonCode"
+        message:
+          type: string
+          description: Human-readable explanation of the error.
+          example: Invalid MSISDN format

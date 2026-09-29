@@ -1,0 +1,21 @@
+{
+  "eligibility_token": "22878ba967fb4d6eb3ca7b6c234eb0b5",
+  "msisdn": "256712345678",
+  "sim_registration_type": "NEW",
+  "sim_type": "SIM",
+  "sim_registration_datetime": "2025-11-01T10:22:00Z",
+  "biometric": {"biometric_type": "FINGERPRINT", "format": "ISO_19794_2", "template": "SAMPLE"},
+  "id_type": "NATIONAL ID",
+  "id_number": "CF123456789ABCDE",
+  "nationality": "UGANDAN",
+  "surname": "KATO",
+  "given_name": "JOHN",
+  "age": 30,
+  "gender": "MALE",
+  "date_of_birth": "1995-05-12",
+  "agent_code": "AGT001",
+  "agent_number": "256712345678",
+  "sales_district": "KAMPALA",
+  "gps_coordinates": "32.5825,0.3476",
+  "activation_date": "2025-10-01"
+}
