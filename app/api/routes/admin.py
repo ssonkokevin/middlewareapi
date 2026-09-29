@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.api.deps.ip_whitelist import get_client_ip
+from app.services.counter_service import counter_service
 
 logger = logging.getLogger("middleware")
 
@@ -258,3 +259,64 @@ async def admin_ping(
     )
 
     return {"status": "admin access confirmed"}
+
+
+# ──────────────────────────────────────────────────── GET /admin/stats
+
+@router.get(
+    "/stats",
+    summary="Monthly request stats — all clients",
+    description=(
+        "Returns successful verification counts grouped by client IP for a given month. "
+        "Requires X-Admin-Key header. "
+        "Query params: year (default: current year), month (default: current month)."
+    ),
+)
+async def get_monthly_stats(
+    request: Request,
+    _: bool = Depends(verify_admin_key),
+    year: int = None,
+    month: int = None,
+) -> Dict[str, Any]:
+    """
+    GET /admin/stats?year=2026&month=5
+    Returns all successful verification counts for that month grouped by IP.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone(timedelta(hours=3)))
+    year  = year  or now.year
+    month = month or now.month
+
+    summary = await counter_service.get_monthly_summary(year, month)
+    logger.info(f"Admin stats queried for {year}-{month:02d} from {get_client_ip(request)}")
+    return summary
+
+
+@router.get(
+    "/stats/{client_ip}",
+    summary="Monthly request stats — single client IP",
+    description=(
+        "Returns successful verification counts for a specific client IP. "
+        "Requires X-Admin-Key header. "
+        "Query params: year (default: current year), month (default: current month)."
+    ),
+)
+async def get_client_stats(
+    client_ip: str,
+    request: Request,
+    _: bool = Depends(verify_admin_key),
+    year: int = None,
+    month: int = None,
+) -> Dict[str, Any]:
+    """
+    GET /admin/stats/10.20.20.1?year=2026&month=5
+    Returns breakdown for one specific whitelisted client IP.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone(timedelta(hours=3)))
+    year  = year  or now.year
+    month = month or now.month
+
+    summary = await counter_service.get_client_monthly_summary(client_ip, year, month)
+    logger.info(f"Admin stats queried for IP={client_ip} {year}-{month:02d} from {get_client_ip(request)}")
+    return summary

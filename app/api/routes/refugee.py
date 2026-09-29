@@ -25,6 +25,7 @@ from app.api.deps.auth import verify_prod_token, verify_test_token
 from app.core.config import settings
 from app.services.refugee_service import refugee_service
 from app.services.auth_service import auth_service
+from app.services.counter_service import counter_service
 
 
 logger = logging.getLogger("middleware")
@@ -131,12 +132,9 @@ async def verify_refugee_prod(
             password=config["password"],
             environment="production",
         )
-        # SUCCESS → delete token immediately
+        # SUCCESS → delete token and increment counter
         await auth_service.delete_token(jti)
-        logger.info(
-            f"Token deleted after successful REFUGEE PROD verification, jti: {jti[:8]}...",
-            extra={"service": "auth", "action": "token_deleted", "reason": "success", "jti_prefix": jti[:8]},
-        )
+        await counter_service.increment(client_ip, "refugee", "prod")
         return {
             "success":     True,
             "environment": "production",
@@ -257,12 +255,9 @@ async def verify_refugee_test(
             password=config["password"],
             environment="test",
         )
-        # SUCCESS → delete token immediately
+        # SUCCESS → delete token and increment counter
         await auth_service.delete_token(jti)
-        logger.info(
-            f"Token deleted after successful REFUGEE TEST verification, jti: {jti[:8]}...",
-            extra={"service": "auth", "action": "token_deleted", "reason": "success", "jti_prefix": jti[:8]},
-        )
+        await counter_service.increment(client_ip, "refugee", "test")
         return {
             "success":     True,
             "environment": "test",
