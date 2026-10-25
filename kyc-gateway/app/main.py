@@ -18,12 +18,8 @@ Routes:
   GET    /health                                        — Service health check
   GET    /docs                                          — Swagger UI
 
-NOTE: No production or test upstream URL has been confirmed yet for any
-provider (see app/core/config.py: KYC_UPSTREAM_URL, NIRA_VALIDATE_URL,
-UNHCR_VALIDATE_URL, etc). Until those are provided, all business logic runs
-against the SQLite-backed store and simulated provider logic in
-app/services/. Swap the stubs for real integrations once endpoints are
-confirmed — the request/response contracts here already match the spec.
+NOTE: UCC forwarding is enabled. Vendor requests are forwarded to UCC_BASE_URL
+while preserving the vendor's X-API-Key.
 
 Every endpoint requires an API key in the `X-API-Key` header (see
 app/api/deps/auth.py).
@@ -31,6 +27,7 @@ app/api/deps/auth.py).
 
 import logging
 import time
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 
@@ -77,18 +74,11 @@ def _ucc_request_headers(request: Request) -> dict[str, str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(
-        "KYC Gateway starting",
-        extra={
-            "debug": settings.DEBUG,
-            "kyc_upstream_url": settings.KYC_UPSTREAM_URL or "TBD — not yet confirmed",
-            "nira_validate_url": settings.NIRA_VALIDATE_URL or "TBD — not yet confirmed",
-            "unhcr_validate_url": settings.UNHCR_VALIDATE_URL or "TBD — not yet confirmed",
-            "sqlite_path": settings.SQLITE_PATH,
-            "webhook_configured": bool(settings.KYC_WEBHOOK_URL),
-        },
+        f"KYC Gateway starting | DEBUG={settings.DEBUG} | PUBLIC_BASE_URL={settings.PUBLIC_BASE_URL} | UCC_BASE_URL={settings.UCC_BASE_URL} | UCC_FORWARDING_ENABLED={settings.UCC_FORWARDING_ENABLED}",
+        extra={"detailed": True},
     )
     yield
-    logger.info("KYC Gateway shutting down")
+    logger.info("KYC Gateway shutting down", extra={"detailed": True})
 
 
 app = FastAPI(
@@ -120,23 +110,79 @@ app.add_middleware(
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start_time = time.time()
-    response = await call_next(request)
-    duration_ms = (time.time() - start_time) * 1000
-
+    
+    # Get client info
     client_ip = request.headers.get(
-        "X-Forwarded-For", request.client.host if request.client else "unknown"
+        "X-Forwarded-For", request.headers.get("X-Real-IP", request.client.host if request.client else "unknown")
     )
-
+    if "," in str(client_ip):
+        client_ip = str(client_ip).split(",")[0].strip()
+    
+    # Get API key info (masked for security)
+    api_key = request.headers.get("X-API-Key", "")
+    user_info = "anonymous"
+    if api_key:
+        if api_key in settings.get_api_keys():
+            user_info = f"vendor({api_key[:8]}...)"
+        else:
+            user_info = f"unauthorized({api_key[:8]}...)"
+    
+    method = request.method
+    path = request.url.path
+    query = str(request.url.query) if request.url.query else ""
+    
+    # Log request details for non-health endpoints
+    if path not in ["/health", "/", "/docs", "/openapi.json", "/redoc"]:
+        try:
+            body = await request.body()
+            if body:
+                body_str = body.decode('utf-8', errors='replace')
+                # Truncate very long bodies
+                if len(body_str) > 500:
+                    body_str = body_str[:500] + "...[truncated]"
+                logger.info(
+                    f"HTTP {method} {path}{'?' + query if query else ''} | User={user_info} IP={client_ip} | Request Body: {body_str}",
+                    extra={"detailed": True},
+                )
+        except Exception as e:
+            logger.debug(f"Could not log request body: {e}", extra={"detailed": True})
+    
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        duration_ms = (time.time() - start_time) * 1000
+        logger.error(
+            f"HTTP {method} {path} | User={user_info} IP={client_ip} | Duration={duration_ms:.0f}ms | Exception: {str(e)}",
+            extra={"detailed": True},
+        )
+        raise
+    
+    duration_ms = (time.time() - start_time) * 1000
+    
+    # Log response
     if response.status_code >= 400:
         logger.warning(
-            f"HTTP {response.status_code} {request.method} {request.url.path} "
-            f"| IP={client_ip} | Duration={duration_ms:.0f}ms"
+            f"HTTP {response.status_code} {method} {path} | User={user_info} IP={client_ip} | Duration={duration_ms:.0f}ms",
+            extra={"detailed": True},
         )
     else:
         logger.info(
-            f"HTTP {request.method} {request.url.path} responded {response.status_code} "
-            f"in {duration_ms:.4f} ms"
+            f"HTTP {method} {path} responded {response.status_code} in {duration_ms:.4f} ms",
+            extra={"detailed": True},
         )
+    
+    # Detailed response logging for API calls
+    if path not in ["/health", "/", "/docs", "/openapi.json", "/redoc"]:
+        try:
+            # Note: we can't easily read response body here without consuming it
+            # For detailed response logging, it would need to be captured differently
+            logger.info(
+                f"HTTP {method} {path} | Status={response.status_code} | User={user_info} IP={client_ip} | Duration={duration_ms:.4f}ms | Headers: {dict(response.headers)}",
+                extra={"detailed": True},
+            )
+        except Exception:
+            pass
+    
     return response
 
 
@@ -156,6 +202,10 @@ async def forward_ucc_requests(request: Request, call_next):
     # by the existing endpoint dependency and are never sent upstream.
     api_key = request.headers.get("X-API-Key")
     if not api_key or api_key not in settings.get_api_keys():
+        logger.warning(
+            f"UCC Forward: Unauthorized key rejected locally | Path={request.url.path} | IP={request.headers.get('X-Forwarded-For', 'unknown')}",
+            extra={"detailed": True},
+        )
         return await call_next(request)
 
     base_url = settings.UCC_BASE_URL.rstrip("/")
@@ -163,7 +213,30 @@ async def forward_ucc_requests(request: Request, call_next):
     if request.url.query:
         target_url = f"{target_url}?{request.url.query}"
 
+    # Log forwarding details
+    client_ip = request.headers.get("X-Forwarded-For", request.headers.get("X-Real-IP", "unknown"))
+    if "," in str(client_ip):
+        client_ip = str(client_ip).split(",")[0].strip()
+    
+    logger.info(
+        f"UCC Forward: {request.method} {request.url.path} -> {target_url} | User=vendor({api_key[:8]}...) IP={client_ip}",
+        extra={"detailed": True},
+    )
+    
     try:
+        body = await request.body()
+        if body and request.url.path not in ["/health"]:
+            try:
+                body_str = body.decode('utf-8', errors='replace')
+                if len(body_str) > 1000:
+                    body_str = body_str[:1000] + "...[truncated]"
+                logger.info(
+                    f"UCC Forward Request Body: {body_str}",
+                    extra={"detailed": True},
+                )
+            except:
+                pass
+        
         async with httpx.AsyncClient(
             timeout=settings.TIMEOUT,
             verify=settings.UCC_TLS_VERIFY,
@@ -171,11 +244,31 @@ async def forward_ucc_requests(request: Request, call_next):
             upstream_response = await client.request(
                 request.method,
                 target_url,
-                content=await request.body(),
+                content=body,
                 headers=_ucc_request_headers(request),
             )
+        
+        logger.info(
+            f"UCC Forward Response: {request.method} {request.url.path} <- {upstream_response.status_code} | Duration tracked separately",
+            extra={"detailed": True},
+        )
+        
+        # Log response body details
+        try:
+            resp_body = upstream_response.content
+            if resp_body:
+                resp_str = resp_body.decode('utf-8', errors='replace')
+                if len(resp_str) > 1000:
+                    resp_str = resp_str[:1000] + "...[truncated]"
+                logger.info(
+                    f"UCC Forward Response Body: {resp_str}",
+                    extra={"detailed": True},
+                )
+        except Exception as e:
+            logger.debug(f"Could not log UCC response body: {e}", extra={"detailed": True})
+            
     except httpx.HTTPError as exc:
-        logger.error("UCC upstream request failed: %s", exc)
+        logger.error(f"UCC upstream request failed: {exc} | Target: {target_url}", extra={"detailed": True})
         return JSONResponse(
             status_code=502,
             content={
@@ -190,6 +283,10 @@ async def forward_ucc_requests(request: Request, call_next):
         response_headers["content-type"] = content_type
     if request_id := upstream_response.headers.get("x-request-id"):
         response_headers["x-request-id"] = request_id
+    # Forward other important headers
+    for h in ["x-correlation-id", "x-trace-id"]:
+        if v := upstream_response.headers.get(h):
+            response_headers[h] = v
 
     return Response(
         status_code=upstream_response.status_code,
@@ -207,6 +304,7 @@ app.include_router(compliance.router)
 
 @app.get("/", include_in_schema=False)
 async def root():
+    logger.info("HTTP GET / | Service info requested", extra={"detailed": True})
     return {
         "status": "ok",
         "service": "KYC Verification API",
@@ -216,6 +314,7 @@ async def root():
 
 @app.get("/health", tags=["Health"])
 async def health_check():
+    logger.info("HTTP GET /health | Health check requested", extra={"detailed": True})
     return {
         "status": "ok",
         "service": "KYC Verification API",
@@ -228,9 +327,15 @@ async def health_check():
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Passes through structured {status, error_code, message} details unchanged."""
+    client_ip = request.headers.get("X-Forwarded-For", request.headers.get("X-Real-IP", "unknown"))
+    if "," in str(client_ip):
+        client_ip = str(client_ip).split(",")[0].strip()
+    api_key = request.headers.get("X-API-Key", "")
+    user_info = f"vendor({api_key[:8]}...)" if api_key else "anonymous"
+    
     logger.warning(
-        f"HTTP {exc.status_code}: {exc.detail}",
-        extra={"status_code": exc.status_code, "path": request.url.path, "method": request.method},
+        f"HTTP {exc.status_code} {request.method} {request.url.path} | User={user_info} IP={client_ip} | Error: {exc.detail}",
+        extra={"detailed": True},
     )
     if isinstance(exc.detail, dict):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
@@ -247,6 +352,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     ErrorResponse envelope, using MISSING_FIELD for absent required fields
     and INVALID_FIELD for values that fail type/enum/pattern constraints.
     """
+    client_ip = request.headers.get("X-Forwarded-For", request.headers.get("X-Real-IP", "unknown"))
+    if "," in str(client_ip):
+        client_ip = str(client_ip).split(",")[0].strip()
+    api_key = request.headers.get("X-API-Key", "")
+    user_info = f"vendor({api_key[:8]}...)" if api_key else "anonymous"
+    
     errors = exc.errors()
     first = errors[0] if errors else {}
     field_name = ".".join(str(p) for p in first.get("loc", [])[1:]) or "payload"
@@ -259,7 +370,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         error_code = "INVALID_FIELD"
         message = f"{field_name}: {first.get('msg', 'invalid value')}"
 
-    logger.warning(f"Validation error on {request.url.path}: {errors}")
+    logger.warning(
+        f"HTTP 422 {request.method} {request.url.path} | User={user_info} IP={client_ip} | Validation Error: {error_code} - {message} | Details: {errors}",
+        extra={"detailed": True},
+    )
     return JSONResponse(
         status_code=422,
         content={"status": "error", "error_code": error_code, "message": message},
@@ -268,9 +382,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
+    client_ip = request.headers.get("X-Forwarded-For", request.headers.get("X-Real-IP", "unknown"))
+    if "," in str(client_ip):
+        client_ip = str(client_ip).split(",")[0].strip()
+    api_key = request.headers.get("X-API-Key", "")
+    user_info = f"vendor({api_key[:8]}...)" if api_key else "anonymous"
+    
     logger.error(
-        f"Unhandled exception: {exc}",
-        extra={"exception_type": type(exc).__name__, "path": request.url.path, "method": request.method},
+        f"HTTP 500 {request.method} {request.url.path} | User={user_info} IP={client_ip} | Unhandled Exception: {exc}",
+        extra={"detailed": True, "exception_type": type(exc).__name__},
         exc_info=True,
     )
     return JSONResponse(
