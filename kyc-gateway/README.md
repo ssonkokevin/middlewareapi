@@ -25,6 +25,8 @@ Content-Type: application/json
 `GET /health`, `/docs`, `/redoc`, and `/openapi.json` do not require a key.
 Keys are configured by the gateway operator with `KYC_API_KEYS`; do not use
 or distribute the example `dev-local-key` outside local development.
+For each accepted vendor key, the gateway forwards the same `X-API-Key` to
+the UCC upstream at `UCC_BASE_URL` and returns the UCC response to the vendor.
 
 ## Main endpoints
 

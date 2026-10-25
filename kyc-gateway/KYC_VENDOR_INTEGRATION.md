@@ -25,10 +25,10 @@ Vendor application -> http://10.33.33.30:8001 -> KYC middleware -> https://192.1
 ```
 
 `https://192.168.5.18:443` is an internal UCC upstream address and must not be used by the
-vendor as its API base URL. The current gateway version uses simulated provider
-logic for identity verification; production forwarding to the UCC upstream
-requires the UCC endpoint paths, authentication method, TLS requirements, and
-request/response mapping to be configured and implemented before go-live.
+vendor as its API base URL. The middleware validates a provisioned vendor key,
+forwards that same `X-API-Key` to UCC, and returns the UCC response to the
+vendor. The UCC service must trust the key, and its TLS certificate must be
+valid for the configured upstream address.
 
 ## Standard request headers
 

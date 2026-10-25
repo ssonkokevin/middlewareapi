@@ -31,9 +31,15 @@ class Settings(BaseSettings):
     # does not control the interface Uvicorn binds to; deploy Uvicorn on
     # 0.0.0.0 so clients on the UCC network can reach this address.
     PUBLIC_BASE_URL: str = "http://10.33.33.30:8001"
-    # Private UCC endpoint. Vendors must use PUBLIC_BASE_URL instead. The
-    # current provider adapter remains simulated until forwarding is built.
+    # Private UCC endpoint. Vendors must use PUBLIC_BASE_URL instead. KYC
+    # requests are forwarded here when UCC_FORWARDING_ENABLED is true.
     UCC_BASE_URL: str = "https://192.168.5.18"
+    # Send KYC business requests to UCC. Set false only for isolated local
+    # development where the simulated provider services are intentionally used.
+    UCC_FORWARDING_ENABLED: bool = True
+    # Keep TLS certificate validation enabled. The UCC certificate must trust
+    # its issuing CA and include the upstream hostname/IP in its SAN.
+    UCC_TLS_VERIFY: bool = True
 
     # -------------------------------------------------------- Upstream (TBD)
     # No production or test URL has been confirmed yet for any provider.

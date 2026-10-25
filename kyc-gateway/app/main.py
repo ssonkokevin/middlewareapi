@@ -34,9 +34,10 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
@@ -47,6 +48,30 @@ _EAT = timezone(timedelta(hours=3))
 
 setup_logging()
 logger = logging.getLogger("kyc_gateway")
+
+
+_UCC_PROXY_PATHS = (
+    "/ownership_check",
+    "/identity_verification",
+    "/individual_registrations",
+    "/corporate_registrations",
+    "/compliance_report",
+)
+
+
+def _is_ucc_proxy_path(path: str) -> bool:
+    """Return whether a request path is a vendor KYC operation for UCC."""
+    return any(path == route or path.startswith(f"{route}/") for route in _UCC_PROXY_PATHS)
+
+
+def _ucc_request_headers(request: Request) -> dict[str, str]:
+    """Forward only contract headers; never forward hop-by-hop client headers."""
+    names = ("X-API-Key", "Content-Type", "Accept", "Idempotency-Key", "X-Request-ID")
+    return {
+        name: value
+        for name in names
+        if (value := request.headers.get(name)) is not None
+    }
 
 
 @asynccontextmanager
@@ -113,6 +138,64 @@ async def log_requests(request: Request, call_next):
             f"in {duration_ms:.4f} ms"
         )
     return response
+
+
+@app.middleware("http")
+async def forward_ucc_requests(request: Request, call_next):
+    """
+    Relay authenticated vendor KYC calls to UCC and return UCC's response.
+
+    PUBLIC_BASE_URL is only the vendor-facing address. This middleware makes
+    the outbound call to UCC_BASE_URL while preserving the vendor's
+    X-API-Key, content type, request body, query string, and idempotency key.
+    """
+    if not settings.UCC_FORWARDING_ENABLED or not _is_ucc_proxy_path(request.url.path):
+        return await call_next(request)
+
+    # Retain the gateway's local allow-list. Invalid/missing keys are handled
+    # by the existing endpoint dependency and are never sent upstream.
+    api_key = request.headers.get("X-API-Key")
+    if not api_key or api_key not in settings.get_api_keys():
+        return await call_next(request)
+
+    base_url = settings.UCC_BASE_URL.rstrip("/")
+    target_url = f"{base_url}{request.url.path}"
+    if request.url.query:
+        target_url = f"{target_url}?{request.url.query}"
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.TIMEOUT,
+            verify=settings.UCC_TLS_VERIFY,
+        ) as client:
+            upstream_response = await client.request(
+                request.method,
+                target_url,
+                content=await request.body(),
+                headers=_ucc_request_headers(request),
+            )
+    except httpx.HTTPError as exc:
+        logger.error("UCC upstream request failed: %s", exc)
+        return JSONResponse(
+            status_code=502,
+            content={
+                "status": "error",
+                "error_code": "UCC_UPSTREAM_UNAVAILABLE",
+                "message": "Unable to reach the UCC KYC service",
+            },
+        )
+
+    response_headers = {}
+    if content_type := upstream_response.headers.get("content-type"):
+        response_headers["content-type"] = content_type
+    if request_id := upstream_response.headers.get("x-request-id"):
+        response_headers["x-request-id"] = request_id
+
+    return Response(
+        status_code=upstream_response.status_code,
+        content=upstream_response.content,
+        headers=response_headers,
+    )
 
 
 # Register routers (no shared prefix — paths match the spec exactly)
