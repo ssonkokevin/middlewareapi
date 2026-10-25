@@ -286,8 +286,8 @@ info:
         guaranteed delivery, should poll instead.
 
 servers:
-  - url: "https://{{production-url}}/api/v1/kyc"
-    description: "Production (base URL to be confirmed)"
+  - url: "http://192.168.5.18:8001"
+    description: "UCC KYC Gateway"
 
 tags:
   - name: Ownership

@@ -75,6 +75,12 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    servers=[
+        {
+            "url": settings.PUBLIC_BASE_URL.rstrip("/"),
+            "description": "UCC KYC Gateway",
+        }
+    ],
 )
 
 app.add_middleware(

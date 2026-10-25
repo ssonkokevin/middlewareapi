@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- General
     DEBUG: bool = True
     TIMEOUT: int = 60
+    # Public address used in generated OpenAPI/Swagger documentation.  This
+    # does not control the interface Uvicorn binds to; deploy Uvicorn on
+    # 0.0.0.0 so clients on the UCC network can reach this address.
+    PUBLIC_BASE_URL: str = "http://192.168.5.18:8001"
 
     # -------------------------------------------------------- Upstream (TBD)
     # No production or test URL has been confirmed yet for any provider.
