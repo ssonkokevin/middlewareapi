@@ -69,6 +69,6 @@ For Docker Compose, the `kyc-gateway` service already publishes port 8001.
 Ensure the middleware server owns `10.33.33.30`, TCP/8001 is permitted by the
 firewall, and the vendor server can route to it. The intended private route is
 vendor application -> `10.33.33.30:8001` -> middleware -> UCC
-`192.168.5.18`. Use a TLS-terminating reverse proxy and
+`https://192.168.5.18` (port 443). Use a TLS-terminating reverse proxy and
 an HTTPS DNS name before exposing the gateway beyond the trusted internal
 network, because API keys must not travel over an untrusted plain-HTTP path.

@@ -21,10 +21,10 @@ keys in source code, email, chat, screenshots, or the API URL.
 The vendor application connects only to the middleware endpoint:
 
 ```
-Vendor application -> http://10.33.33.30:8001 -> KYC middleware -> UCC 192.168.5.18
+Vendor application -> http://10.33.33.30:8001 -> KYC middleware -> https://192.168.5.18:443
 ```
 
-`192.168.5.18` is an internal UCC upstream address and must not be used by the
+`https://192.168.5.18:443` is an internal UCC upstream address and must not be used by the
 vendor as its API base URL. The current gateway version uses simulated provider
 logic for identity verification; production forwarding to the UCC upstream
 requires the UCC endpoint paths, authentication method, TLS requirements, and
@@ -96,7 +96,7 @@ registration.
 - Confirm that the vendor server can reach `10.33.33.30:8001`; it does not
   need direct access to `192.168.5.18`.
 - Confirm the middleware server can reach the UCC internal address
-  `192.168.5.18` and that its production forwarding adapter is enabled.
+  `https://192.168.5.18:443` and that its production forwarding adapter is enabled.
 - Give the vendor one newly generated, unique API key through a secure secret
   channel; set that exact key in `KYC_API_KEYS` on the gateway.
 - Confirm that the vendor has the v2.0.0 OpenAPI contract and is not using a

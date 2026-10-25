@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # does not control the interface Uvicorn binds to; deploy Uvicorn on
     # 0.0.0.0 so clients on the UCC network can reach this address.
     PUBLIC_BASE_URL: str = "http://10.33.33.30:8001"
+    # Private UCC endpoint. Vendors must use PUBLIC_BASE_URL instead. The
+    # current provider adapter remains simulated until forwarding is built.
+    UCC_BASE_URL: str = "https://192.168.5.18"
 
     # -------------------------------------------------------- Upstream (TBD)
     # No production or test URL has been confirmed yet for any provider.
