@@ -78,7 +78,7 @@ app = FastAPI(
     servers=[
         {
             "url": settings.PUBLIC_BASE_URL.rstrip("/"),
-            "description": "UCC KYC Gateway",
+            "description": "Vendor-facing UCC KYC Gateway",
         }
     ],
 )

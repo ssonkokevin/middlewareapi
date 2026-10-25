@@ -4,14 +4,14 @@ The KYC Gateway exposes the UCC SIM-registration API to authorised client
 applications. The deployed base URL is:
 
 ```
-http://192.168.5.18:8001
+http://10.33.33.30:8001
 ```
 
 The full vendor handoff is in [KYC_VENDOR_INTEGRATION.md](KYC_VENDOR_INTEGRATION.md).
 The machine-readable contract is [kyc_api_v2.yml](kyc_api_v2.yml). When the
 service is running, interactive documentation is available at
-`http://192.168.5.18:8001/docs` and the OpenAPI JSON at
-`http://192.168.5.18:8001/openapi.json`.
+`http://10.33.33.30:8001/docs` and the OpenAPI JSON at
+`http://10.33.33.30:8001/openapi.json`.
 
 ## Authentication
 
@@ -66,7 +66,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 For Docker Compose, the `kyc-gateway` service already publishes port 8001.
-Ensure the server owns `192.168.5.18`, TCP/8001 is permitted by the firewall,
-and the vendor server can route to it. Use a TLS-terminating reverse proxy and
+Ensure the middleware server owns `10.33.33.30`, TCP/8001 is permitted by the
+firewall, and the vendor server can route to it. The intended private route is
+vendor application -> `10.33.33.30:8001` -> middleware -> UCC
+`192.168.5.18`. Use a TLS-terminating reverse proxy and
 an HTTPS DNS name before exposing the gateway beyond the trusted internal
 network, because API keys must not travel over an untrusted plain-HTTP path.

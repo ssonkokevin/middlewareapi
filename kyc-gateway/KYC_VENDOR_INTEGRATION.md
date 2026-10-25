@@ -4,9 +4,9 @@
 
 | Item | Value |
 | --- | --- |
-| API base URL | `http://192.168.5.18:8001` |
-| Interactive API documentation | `http://192.168.5.18:8001/docs` |
-| OpenAPI definition | `http://192.168.5.18:8001/openapi.json` or `kyc_api_v2.yml` |
+| API base URL | `http://10.33.33.30:8001` |
+| Interactive API documentation | `http://10.33.33.30:8001/docs` |
+| OpenAPI definition | `http://10.33.33.30:8001/openapi.json` or `kyc_api_v2.yml` |
 | Health check | `GET /health` |
 | Authentication | `X-API-Key: <assigned vendor key>` |
 | Content type | `application/json` |
@@ -15,6 +15,20 @@ The vendor must be issued a unique API key by the gateway administrator over a
 separate secure channel. A key is required for every KYC business operation.
 Do not use the development key shown in sample configuration, and do not send
 keys in source code, email, chat, screenshots, or the API URL.
+
+## Network routing
+
+The vendor application connects only to the middleware endpoint:
+
+```
+Vendor application -> http://10.33.33.30:8001 -> KYC middleware -> UCC 192.168.5.18
+```
+
+`192.168.5.18` is an internal UCC upstream address and must not be used by the
+vendor as its API base URL. The current gateway version uses simulated provider
+logic for identity verification; production forwarding to the UCC upstream
+requires the UCC endpoint paths, authentication method, TLS requirements, and
+request/response mapping to be configured and implemented before go-live.
 
 ## Standard request headers
 
@@ -79,7 +93,10 @@ registration.
 
 ## Go-live checklist
 
-- Confirm that the vendor server can reach `192.168.5.18:8001`.
+- Confirm that the vendor server can reach `10.33.33.30:8001`; it does not
+  need direct access to `192.168.5.18`.
+- Confirm the middleware server can reach the UCC internal address
+  `192.168.5.18` and that its production forwarding adapter is enabled.
 - Give the vendor one newly generated, unique API key through a secure secret
   channel; set that exact key in `KYC_API_KEYS` on the gateway.
 - Confirm that the vendor has the v2.0.0 OpenAPI contract and is not using a

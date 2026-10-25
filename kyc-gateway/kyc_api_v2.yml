@@ -286,8 +286,8 @@ info:
         guaranteed delivery, should poll instead.
 
 servers:
-  - url: "http://192.168.5.18:8001"
-    description: "UCC KYC Gateway"
+  - url: "http://10.33.33.30:8001"
+    description: "Vendor-facing UCC KYC Gateway"
 
 tags:
   - name: Ownership
