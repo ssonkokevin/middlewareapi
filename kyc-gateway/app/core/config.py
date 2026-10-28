@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     # Private UCC endpoint. Vendors must use PUBLIC_BASE_URL instead. KYC
     # requests are forwarded here when UCC_FORWARDING_ENABLED is true.
     UCC_BASE_URL: str = "https://192.168.5.18"
+    # API key the middleware uses to authenticate to UCC upstream. This is
+    # separate from the vendor-facing KYC_API_KEYS: the KYC partner presents
+    # their own key to the middleware, and the middleware re-authenticates to
+    # UCC with this UCC_API_KEY.
+    UCC_API_KEY: str = ""
     # Send KYC business requests to UCC. Set false only for isolated local
     # development where the simulated provider services are intentionally used.
     UCC_FORWARDING_ENABLED: bool = True

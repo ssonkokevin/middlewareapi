@@ -1,0 +1,358 @@
+{
+  "info": {
+    "name": "KYC Gateway - NIRA & UCC Endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Test endpoints for the KYC Verification API Gateway (v2.0.0). \n\nAuth: every business endpoint requires X-API-Key (e.g. dev-local-key). The middleware re-authenticates to UCC (192.168.5.18) using UCC_API_KEY internally.\n\nNIRA response headers to watch: Authorization (NIRA token) and X-Verification-Reference.\n\nNote: UCC-forwarded calls (/nira/*, /ownership_check, etc.) require network access to 192.168.5.18.",
+    "_postman_variable_scope": "collection"
+  },
+  "item": [
+    {
+      "name": "Setup / Variables",
+      "item": [
+        {
+          "name": "Set Base URL",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/health",
+            "description": "Set collection variable `base_url` to your gateway host (e.g. http://127.0.0.1:8001 or http://<your-ip>:8001).",
+            "header": []
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Health Check",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/health",
+            "description": "Service liveness check. No API key required."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "NIRA - Token",
+      "item": [
+        {
+          "name": "POST /nira/token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}",
+                "description": "Partner API key validated by the middleware"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Client-ID",
+                "value": "{{nira_client_id}}",
+                "description": "NIRA client ID"
+              },
+              {
+                "key": "X-Secret-Key",
+                "value": "{{nira_secret_key}}",
+                "description": "NIRA secret key"
+              },
+              {
+                "key": "X-App-ID",
+                "value": "{{nira_app_id}}",
+                "description": "NIRA app ID"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{nira_client_id}}\",\n  \"app_id\": \"{{nira_app_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/nira/token",
+            "description": "Obtain a NIRA token through UCC. Response header `Authorization` will contain the token (if UCC is reachable)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "NIRA - Certificate",
+      "item": [
+        {
+          "name": "GET /nira/certificate",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Authorization {{nira_token}}",
+                "description": "NIRA token from /nira/token Authorization header"
+              }
+            ],
+            "url": "{{base_url}}/nira/certificate",
+            "description": "Fetch NIRA's certificate before each AUTH request."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "NIRA - Auth",
+      "item": [
+        {
+          "name": "POST /nira/auth",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Authorization {{nira_token}}"
+              },
+              {
+                "key": "X-MISP-License-Key",
+                "value": "{{nira_partner_license_key}}"
+              },
+              {
+                "key": "X-Partner-ID",
+                "value": "{{nira_partner_id}}"
+              },
+              {
+                "key": "X-Partner-API-Key",
+                "value": "{{nira_partner_api_key}}"
+              },
+              {
+                "key": "Signature",
+                "value": "{{nira_signature}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identity\": {\n    \"id_type\": \"NATIONAL ID\",\n    \"id_number\": \"CF123456789ABCDE\"\n  },\n  \"biometric\": {\n    \"biometric_type\": \"FINGERPRINT\",\n    \"format\": \"MOSIP_SBI_SIGNED\",\n    \"blocks\": []\n  },\n  \"transaction_id\": \"9181672570\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/nira/auth",
+            "description": "Authenticate a National ID through NIRA. Response header `X-Verification-Reference` will contain the reference (if UCC is reachable)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Ownership Check",
+      "item": [
+        {
+          "name": "POST /ownership_check",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subscriber_type\": \"individual\",\n  \"id_type\": \"NATIONAL ID\",\n  \"id_number\": \"CF123456789ABCDE\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/ownership_check",
+            "description": "Verify SIM ownership eligibility. Forwarded to UCC."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Identity Verification",
+      "item": [
+        {
+          "name": "POST /identity_verification",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id_type\": \"NATIONAL ID\",\n  \"id_number\": \"CF123456789ABCDE\",\n  \"transaction_id\": \"9181672570\",\n  \"biometric\": {\n    \"biometric_type\": \"FINGERPRINT\",\n    \"format\": \"MOSIP_SBI_SIGNED\",\n    \"blocks\": []\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/identity_verification",
+            "description": "Verify subscriber identity and biometric. Returns `verification_reference` in body (and `X-Verification-Reference` header if forwarded from UCC)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Individual Registration",
+      "item": [
+        {
+          "name": "POST /individual_registrations",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"verification_reference\": \"vrf_EXAMPLE123456789\",\n  \"msisdn\": \"256712345678\",\n  \"sim_registration_type\": \"NEW\",\n  \"sim_type\": \"SIM\",\n  \"sim_registration_datetime\": \"2025-11-01T10:22:00Z\",\n  \"id_type\": \"NATIONAL ID\",\n  \"id_number\": \"CF123456789ABCDE\",\n  \"nationality\": \"UGANDAN\",\n  \"surname\": \"KATO\",\n  \"given_name\": \"JOHN\",\n  \"gender\": \"MALE\",\n  \"date_of_birth\": \"1995-05-12\",\n  \"agent_code\": \"AGT001\",\n  \"agent_number\": \"256712345678\",\n  \"sales_district\": \"KAMPALA\",\n  \"gps_coordinates\": \"32.5825,0.3476\",\n  \"activation_date\": \"2025-10-01\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{base_url}}/individual_registrations",
+            "description": "Register individual SIM. Requires a valid verification_reference."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Compliance Report",
+      "item": [
+        {
+          "name": "GET /compliance_report",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{api_key}}"
+              }
+            ],
+            "url": "{{base_url}}/compliance_report",
+            "description": "Retrieve compliance report scoped to the calling API key."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Auth - Invalid Key (expect 401)",
+      "item": [
+        {
+          "name": "POST /nira/token with bad key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "invalid-key"
+              }
+            ],
+            "url": "{{base_url}}/nira/token",
+            "description": "Should return 401 UNAUTHORIZED."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8001",
+      "description": "Gateway base URL. Change to your server IP/hostname."
+    },
+    {
+      "key": "api_key",
+      "value": "dev-local-key",
+      "description": "Partner API key accepted by the middleware (KYC_API_KEYS)"
+    },
+    {
+      "key": "nira_client_id",
+      "value": "",
+      "description": "NIRA client ID (from onboarding)"
+    },
+    {
+      "key": "nira_secret_key",
+      "value": "",
+      "description": "NIRA secret key (from onboarding)"
+    },
+    {
+      "key": "nira_app_id",
+      "value": "",
+      "description": "NIRA app ID (from onboarding)"
+    },
+    {
+      "key": "nira_token",
+      "value": "",
+      "description": "NIRA token captured from /nira/token Authorization response header"
+    },
+    {
+      "key": "nira_partner_license_key",
+      "value": "",
+      "description": "NIRA MISP license key"
+    },
+    {
+      "key": "nira_partner_id",
+      "value": "",
+      "description": "NIRA Partner ID (issued at onboarding)"
+    },
+    {
+      "key": "nira_partner_api_key",
+      "value": "",
+      "description": "NIRA Partner API Key"
+    },
+    {
+      "key": "nira_signature",
+      "value": "",
+      "description": "NIRA request signature"
+    }
+  ]
+}

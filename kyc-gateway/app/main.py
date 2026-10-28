@@ -15,11 +15,21 @@ Routes:
   POST   /corporate_registrations/batch                  — Submit batch corporate registrations
   GET    /corporate_registrations/batch/{job_id}         — Retrieve corporate batch processing status
   GET    /compliance_report                             — Retrieve compliance report
+  POST   /nira/token                                     — Obtain a NIRA token through UCC
+  GET    /nira/certificate                               — Fetch NIRA certificate before each AUTH
+  POST   /nira/auth                                      — Authenticate a National ID through NIRA
   GET    /health                                        — Service health check
   GET    /docs                                          — Swagger UI
 
 NOTE: UCC forwarding is enabled. Vendor requests are forwarded to UCC_BASE_URL
-while preserving the vendor's X-API-Key.
+while the middleware re-authenticates to UCC with UCC_API_KEY (not the
+vendor's X-API-Key). The vendor's key is validated locally against
+KYC_API_KEYS.
+
+The NIRA token (Authorization header) and verification reference
+(X-Verification-Reference header) are returned in response headers. CORS is
+placed outside the proxy middleware and exposes only those headers so
+browser-based clients can read them.
 
 Every endpoint requires an API key in the `X-API-Key` header (see
 app/api/deps/auth.py).
@@ -53,6 +63,9 @@ _UCC_PROXY_PATHS = (
     "/individual_registrations",
     "/corporate_registrations",
     "/compliance_report",
+    "/nira/token",
+    "/nira/certificate",
+    "/nira/auth",
 )
 
 
@@ -61,20 +74,29 @@ def _is_ucc_proxy_path(path: str) -> bool:
     return any(path == route or path.startswith(f"{route}/") for route in _UCC_PROXY_PATHS)
 
 
-def _ucc_request_headers(request: Request) -> dict[str, str]:
-    """Forward only contract headers; never forward hop-by-hop client headers."""
-    names = ("X-API-Key", "Content-Type", "Accept", "Idempotency-Key", "X-Request-ID")
-    return {
+def _ucc_request_headers(request: Request, ucc_api_key: str) -> dict[str, str]:
+    """Forward contract headers to UCC. The vendor's X-API-Key is replaced
+    with the middleware's own UCC_API_KEY so UCC authenticates the gateway,
+    not the partner. NIRA-specific headers are passed through unchanged."""
+    names = (
+        "Content-Type", "Accept", "Idempotency-Key", "X-Request-ID",
+        "X-Client-ID", "X-Secret-Key", "X-App-ID",
+        "X-MISP-License-Key", "X-Partner-ID", "X-Partner-API-Key", "Signature",
+    )
+    headers = {
         name: value
         for name in names
         if (value := request.headers.get(name)) is not None
     }
+    # The middleware authenticates to UCC with its own key, never the partner's.
+    headers["X-API-Key"] = ucc_api_key
+    return headers
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(
-        f"KYC Gateway starting | DEBUG={settings.DEBUG} | PUBLIC_BASE_URL={settings.PUBLIC_BASE_URL} | UCC_BASE_URL={settings.UCC_BASE_URL} | UCC_FORWARDING_ENABLED={settings.UCC_FORWARDING_ENABLED}",
+        f"KYC Gateway starting | DEBUG={settings.DEBUG} | PUBLIC_BASE_URL={settings.PUBLIC_BASE_URL} | UCC_BASE_URL={settings.UCC_BASE_URL} | UCC_API_KEY=**{settings.UCC_API_KEY[-4:] if settings.UCC_API_KEY else 'MISSING'} | UCC_FORWARDING_ENABLED={settings.UCC_FORWARDING_ENABLED}",
         extra={"detailed": True},
     )
     yield
@@ -104,6 +126,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Expose the NIRA token and verification reference response headers so
+    # browser-based clients (as well as server clients) can read them.
+    expose_headers=["Authorization", "X-Verification-Reference"],
 )
 
 
@@ -198,15 +223,28 @@ async def forward_ucc_requests(request: Request, call_next):
     if not settings.UCC_FORWARDING_ENABLED or not _is_ucc_proxy_path(request.url.path):
         return await call_next(request)
 
-    # Retain the gateway's local allow-list. Invalid/missing keys are handled
-    # by the existing endpoint dependency and are never sent upstream.
+    # Let CORS handle preflight OPTIONS before any auth check — preflight
+    # requests carry no auth headers.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    # Retain the gateway's local allow-list. Invalid/missing keys are rejected
+    # here with 401 so proxy paths without route handlers (e.g. /nira/*)
+    # still get a proper unauthorized response instead of 404.
     api_key = request.headers.get("X-API-Key")
     if not api_key or api_key not in settings.get_api_keys():
         logger.warning(
             f"UCC Forward: Unauthorized key rejected locally | Path={request.url.path} | IP={request.headers.get('X-Forwarded-For', 'unknown')}",
             extra={"detailed": True},
         )
-        return await call_next(request)
+        return JSONResponse(
+            status_code=401,
+            content={
+                "status": "error",
+                "error_code": "UNAUTHORIZED",
+                "message": "Invalid or missing API key",
+            },
+        )
 
     base_url = settings.UCC_BASE_URL.rstrip("/")
     target_url = f"{base_url}{request.url.path}"
@@ -219,9 +257,20 @@ async def forward_ucc_requests(request: Request, call_next):
         client_ip = str(client_ip).split(",")[0].strip()
     
     logger.info(
-        f"UCC Forward: {request.method} {request.url.path} -> {target_url} | User=vendor({api_key[:8]}...) IP={client_ip}",
+        f"UCC Forward: {request.method} {request.url.path} -> {target_url} | User=vendor({api_key[:8]}...) | UCC key=**{settings.UCC_API_KEY[-4:] if settings.UCC_API_KEY else 'MISSING'} | IP={client_ip}",
         extra={"detailed": True},
     )
+    # Log NIRA-specific headers being forwarded (never their values).
+    nira_headers = [
+        name for name in ("X-Client-ID", "X-Secret-Key", "X-App-ID",
+                          "X-MISP-License-Key", "X-Partner-ID", "X-Partner-API-Key", "Signature")
+        if request.headers.get(name)
+    ]
+    if nira_headers:
+        logger.info(
+            f"UCC Forward NIRA headers: {', '.join(nira_headers)} | Path={request.url.path}",
+            extra={"detailed": True},
+        )
     
     try:
         body = await request.body()
@@ -245,7 +294,7 @@ async def forward_ucc_requests(request: Request, call_next):
                 request.method,
                 target_url,
                 content=body,
-                headers=_ucc_request_headers(request),
+                headers=_ucc_request_headers(request, settings.UCC_API_KEY),
             )
         
         logger.info(
@@ -283,6 +332,11 @@ async def forward_ucc_requests(request: Request, call_next):
         response_headers["content-type"] = content_type
     if request_id := upstream_response.headers.get("x-request-id"):
         response_headers["x-request-id"] = request_id
+    # Forward NIRA response headers so clients can read the token and reference.
+    if auth := upstream_response.headers.get("authorization"):
+        response_headers["authorization"] = auth
+    if x_vref := upstream_response.headers.get("x-verification-reference"):
+        response_headers["x-verification-reference"] = x_vref
     # Forward other important headers
     for h in ["x-correlation-id", "x-trace-id"]:
         if v := upstream_response.headers.get(h):
