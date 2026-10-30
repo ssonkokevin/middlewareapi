@@ -50,6 +50,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.logger import setup_logging
 from app.api.routes import ownership, verification, registration, compliance
+from app.services.biometric_converter import convert_biometric_if_wsq
 
 _EAT = timezone(timedelta(hours=3))
 
@@ -274,6 +275,21 @@ async def forward_ucc_requests(request: Request, call_next):
     
     try:
         body = await request.body()
+
+        # Convert WSQ biometric → JPEG before forwarding to UCC, which
+        # requires JPEG format for REFUGEE ID verification.
+        if request.url.path == "/identity_verification" and body:
+            try:
+                import json as _json
+                body_json = _json.loads(body)
+                biometric = body_json.get("biometric")
+                if biometric and biometric.get("format") == "WSQ":
+                    converted = convert_biometric_if_wsq(biometric)
+                    body_json["biometric"] = converted
+                    body = _json.dumps(body_json).encode("utf-8")
+            except Exception:
+                pass
+
         if body and request.url.path not in ["/health"]:
             try:
                 body_str = body.decode('utf-8', errors='replace')

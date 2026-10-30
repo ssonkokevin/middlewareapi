@@ -117,7 +117,7 @@ class IsoImageBiometric(BaseModel):
     minutiae template — ISO_19794_4 for fingerprint, ISO_19794_6 for iris."""
 
     biometric_type: Literal["FINGERPRINT", "IRIS"] = Field(..., example="FINGERPRINT")
-    format: Literal["ISO_19794_4", "ISO_19794_6"] = Field(..., example="ISO_19794_4")
+    format: Literal["ISO_19794_4", "ISO_19794_6", "JPEG", "WSQ"] = Field(..., example="ISO_19794_4")
     data: str = Field(..., example="Uk9OQVBJU08xOTc5NDQAAAAA...")
 
 
@@ -140,6 +140,8 @@ BiometricData = Annotated[
 class IdentityVerificationRequest(BaseModel):
     id_type: IdType
     id_number: str = Field(..., example="CF123456789ABCDE")
+    first_name: Optional[str] = Field(None, example="JOHN", description="Required by UCC for REFUGEE ID type")
+    last_name: Optional[str] = Field(None, example="KATO", description="Required by UCC for REFUGEE ID type")
     transaction_id: Optional[str] = Field(
         None,
         pattern=r"^[0-9]{10}$",

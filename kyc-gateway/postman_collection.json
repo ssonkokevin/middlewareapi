@@ -200,30 +200,30 @@
       "name": "Identity Verification",
       "item": [
         {
-          "name": "POST /identity_verification",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "X-API-Key",
-                "value": "{{api_key}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"id_type\": \"NATIONAL ID\",\n  \"id_number\": \"CF123456789ABCDE\",\n  \"transaction_id\": \"9181672570\",\n  \"biometric\": {\n    \"biometric_type\": \"FINGERPRINT\",\n    \"format\": \"MOSIP_SBI_SIGNED\",\n    \"blocks\": []\n  }\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "url": "{{base_url}}/identity_verification",
-            "description": "Verify subscriber identity and biometric. Returns `verification_reference` in body (and `X-Verification-Reference` header if forwarded from UCC)."
+"name": "POST /identity_verification",
+            "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-API-Key",
+                    "value": "{{api_key}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"id_type\": \"REFUGEE ID\",\n  \"id_number\": \"B7P-106411154\",\n  \"first_name\": \"JOHN\",\n  \"last_name\": \"KATO\",\n  \"biometric\": {\n    \"biometric_type\": \"FINGERPRINT\",\n    \"format\": \"ISO_19794_4\",\n    \"data\": \"/6D/qAB6TklTVF9DT00gOQpQSVhfV0lEVEggMjk2ClBJWF9IRUlHSFQgMzU0ClBJWF9ERVBUSCA4ClBQSSA1MDAKTE9TU1kgMQpDT0xPUlNQQUNFIEdSQVkKQ09NUFJFU1NJT04gV1NRCldTUV9CSVRSQVRFIDAuODAwMDAw/6gADUlubm92YXRyaWNz/6QAOgkHAAky0yXNAArg8xmaAQpB7/GaAQuOJ2TNAAvheaMzAAku/1YAAQr5M9MzAQvyhyGaAAomd9oz/6UBhQIALAM8+ANJKQM8+ANJKQM8+ANJKQNJ0wNYlwNCWgNPnwNCAgNPNQNR5ANiRANUZwNlSQNNOgNcrQNR8ANiVAM8tQNI2gM8KgNIMwNBggNOnAM/dwNMKANJmQNYUQNWBgNnOwNH7ANWTgNRgwNh0ANYNwNp2wNhNwN0qQNd+ANwwwNi/wN2ywNnzAN8jwN0BAOLOANr4AOBdAN4fQOQlgNg7QN0TwNr+wOBkwNe4QNx2gNkmQN4twNyKgOJAAN/wQOZTwNomQN9hAN9KwOWMwNFlQNTgANF0wNTygNJTgNX+ANG5gNVFANFdwNTWwNWMANnbANMogNb9QNWGANnTwNOnQNeVgNPkQNfewNhzgN1XQNc9gNvjgNWKwNnZwNe8wNx8QNlvQN6FgNi9wN2wgN1xwONVQNx/QOIyQO2ewPa+gN7ngOUWAPeRgIarANXsQNpOwNt3gOD2AObSQO6VwPE4QPsQQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP+iABEA/wFiASgCWMwEQH4CK47/pgCCAAAAAwQFBAgJDBEaFwA...[truncated]\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": "{{base_url}}/identity_verification",
+                "description": "Verify subscriber identity and biometric for REFUGEE ID. Returns `verification_reference` in body (and `X-Verification-Reference` header if forwarded from UCC). first_name and last_name are required for REFUGEE ID."
           },
           "response": []
         }
