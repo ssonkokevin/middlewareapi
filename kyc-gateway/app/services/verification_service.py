@@ -76,6 +76,27 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
 def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerificationData:
     _validate_biometric_shape(payload)
 
+    # NATIONAL ID requires the three-step NIRA flow via UCC
+    # (/nira/token → /nira/certificate → /nira/auth). Return VERIFICATION_REQUIRED
+    # instead of simulating a match/no-match. The vendor completes the NIRA flow
+    # and submits the resulting verification_reference to registration.
+    if payload.id_type == "NATIONAL ID":
+        return IdentityVerificationData(
+            verified=False,
+            reason_code="VERIFICATION_REQUIRED",
+            message=(
+                "National ID verification requires the three-step NIRA flow: "
+                "/nira/token → /nira/certificate → /nira/auth. "
+                "Submit the resulting verification_reference to registration."
+            ),
+            provider="NIRA",
+            provider_status="NIRA_FLOW_REQUIRED",
+            verification_reference=None,
+            verified_at=None,
+            expires_at=None,
+            matched_attributes=None,
+        )
+
     # Convert WSQ biometric to JPEG before provider call — UCC requires JPEG
     # for REFUGEE ID. The conversion is transparent; the stored payload still
     # reflects the original client-submitted format.

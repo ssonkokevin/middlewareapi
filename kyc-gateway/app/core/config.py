@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     # its issuing CA and include the upstream hostname/IP in its SAN.
     UCC_TLS_VERIFY: bool = True
 
+    # ------------------------------------------------------------- NIRA
+    NIRA_CLIENT_ID: str = ""
+    NIRA_SECRET_KEY: str = ""
+    NIRA_APP_ID: str = ""
+    NIRA_MISP_LICENSE_KEY: str = ""
+    NIRA_PARTNER_ID: str = ""
+    NIRA_PARTNER_API_KEY: str = ""
+    NIRA_KEYSTORE_PATH: str = ""
+    NIRA_KEYSTORE_PASSWORD: str = ""
+    NIRA_ENV: str = "pre-production"
+    NIRA_DOMAIN_URI: str = ""
+
     # -------------------------------------------------------- Upstream (TBD)
     # No production or test URL has been confirmed yet for any provider.
     # Leave blank until UCC/NIRA/UNHCR/NCIC/URSB provide real base URL(s).

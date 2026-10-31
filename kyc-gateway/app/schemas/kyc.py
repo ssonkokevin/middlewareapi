@@ -80,7 +80,7 @@ OrganisationType = Literal[
     "INTERNATIONAL ORGANISATION",
 ]
 Provider = Literal["NIRA", "UNHCR", "NCIC", "URSB"]
-ProviderStatus = Literal["LIVE", "PLANNED"]
+ProviderStatus = Literal["LIVE", "PLANNED", "NIRA_FLOW_REQUIRED"]
 
 
 # ------------------------------------------------------------------ Ownership
