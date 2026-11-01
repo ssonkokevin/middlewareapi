@@ -248,7 +248,7 @@ async def forward_ucc_requests(request: Request, call_next):
         )
 
     base_url = settings.UCC_BASE_URL.rstrip("/")
-    target_url = f"{base_url}{request.url.path}"
+    target_url = f"{base_url}/api/v1/kyc{request.url.path}"
     if request.url.query:
         target_url = f"{target_url}?{request.url.query}"
 
