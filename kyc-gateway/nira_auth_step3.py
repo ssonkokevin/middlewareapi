@@ -17,6 +17,10 @@ Files needed:
   partner-key.pem — Partner private key (BEGIN PRIVATE KEY) for JWS signing
   blocks.json     — Biometric blocks from MOSIP SBI capture (optional)
 
+Environment:
+  UCC_BASE_URL — sets domainUri in the request body (default:
+                 https://api-internal-preprod.nsis.nira.go.ug)
+
 Dependencies: cryptography requests
 """
 
@@ -81,19 +85,16 @@ def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
 
 
 def build_inner_request(transaction_id: str, nin: str, dob: str,
-                        surname: str, given_names: str, blocks=None,
-                        domain_uri=None) -> dict:
+                        surname: str, given_names: str, blocks=None) -> dict:
     """Build the inner (plaintext) NIRA AUTH request.
 
     Includes the MOSIP SBI-signed biometric blocks when provided, so the
     fingerprint is captured within the ~30-second freshness window.
 
-    `domain_uri` defaults to the NIRA Pre-Production base URL but can be
-    overridden via the DOMAIN_URI env var (e.g. to test UCC base URL).
+    `domainUri` uses the UCC_BASE_URL env var (default NIRA base URL).
     """
-    if domain_uri is None:
-        domain_uri = os.environ.get("DOMAIN_URI",
-                                    "https://api-internal-preprod.nsis.nira.go.ug")
+    domain_uri = os.environ.get("UCC_BASE_URL",
+                                "https://api-internal-preprod.nsis.nira.go.ug")
     request = {
         "id": "mosip.identity.auth",
         "version": "1.0",
