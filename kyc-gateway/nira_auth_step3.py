@@ -8,10 +8,14 @@ Client-side crypto required (cannot be done with curl alone):
   4. request         = AES-GCM encrypted biometric + demographic payload
   5. Signature       = detached JWS over the request body
 
-Run on the server: python3 nira_auth_step3.py <token> <nin> <dob> <surname> <given_names>
+Run on the server:
+  python3 nira_auth_step3.py <token> <nin> <dob> <surname> <given_names>
 
-Dependencies: cryptography, pyjwt, requests
-  pip install cryptography pyjwt requests
+Files needed in the same directory:
+  nira-cert.pem   — NIRA encryption certificate from GET /nira/certificate response
+  partner-key.pem — Partner private key (BEGIN PRIVATE KEY) for JWS signing (optional)
+
+Dependencies: cryptography pyjwt requests
 """
 
 import sys
@@ -32,6 +36,11 @@ import requests
 
 def b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def load_file(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 def compute_thumbprint(cert_pem: str) -> str:
@@ -61,7 +70,6 @@ def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
     aesgcm = AESGCM(key)
     nonce = os.urandom(12)
     ct = aesgcm.encrypt(nonce, plaintext, None)
-    # ct already includes the 16-byte tag appended by cryptography
     return b64url_encode(nonce + ct)
 
 
@@ -87,13 +95,13 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
     }
 
 
-def make_jws(header: dict, payload: bytes, private_key_pem: str) -> str:
+def make_jws(payload: bytes, private_key_pem: str) -> str:
     """Create a detached JWS (RS256) over the payload."""
     private_key = serialization.load_pem_private_key(
         private_key_pem.encode("utf-8"), password=None
     )
     token = jwt.encode(
-        header,
+        {},
         payload,
         algorithm="RS256",
         key=private_key,
@@ -120,16 +128,12 @@ def main():
     partner_api_key = "266950"
     vendor_api_key = "1774eb6283f6202ed9b9d7705583a731c7d03ad8ca2fedd26d7f7413539ee547"
 
-    # ---- Step A: Load NIRA certificate from Step 2 response ----
-    # Paste the PEM certificate from the GET /nira/certificate response here.
-    # It should be the full "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----" block.
-    niracert_pem = """-----BEGIN CERTIFICATE-----
-PASTE_CERTIFICATE_FROM_STEP2_HERE
------END CERTIFICATE-----"""
-
-    if "PASTE_CERTIFICATE_FROM_STEP2_HERE" in niracert_pem:
-        print("ERROR: You must paste the NIRA certificate PEM from Step 2 into niracert_pem")
+    # ---- Step A: Load NIRA certificate from file ----
+    if not os.path.exists("nira-cert.pem"):
+        print("ERROR: nira-cert.pem not found. Save the Step 2 certificate PEM to nira-cert.pem")
         sys.exit(1)
+    niracert_pem = load_file("nira-cert.pem")
+    print(f"Loaded NIRA certificate from nira-cert.pem")
 
     # ---- Step B: Compute thumbprint ----
     thumbprint = compute_thumbprint(niracert_pem)
@@ -152,7 +156,6 @@ PASTE_CERTIFICATE_FROM_STEP2_HERE
     print(f"requestHMAC (AES-GCM of uppercase SHA-256): {request_hmac[:40]}...")
 
     # ---- Step F: Compute encrypted request field ----
-    # The "request" field is the AES-GCM encrypted inner request payload
     request_field = aes_gcm_encrypt(inner_request_json, session_key)
     print(f"request (AES-GCM encrypted payload): {request_field[:40]}...")
 
@@ -176,17 +179,13 @@ PASTE_CERTIFICATE_FROM_STEP2_HERE
     print(f"Outer body size: {len(outer_body_json)} bytes")
 
     # ---- Step H: Create JWS signature ----
-    # NOTE: Requires the partner's private key. Paste it below or load from file.
-    partner_private_key_pem = """-----BEGIN PRIVATE KEY-----
-PASTE_PARTNER_PRIVATE_KEY_HERE
------END PRIVATE KEY-----"""
-
-    if "PASTE_PARTNER_PRIVATE_KEY_HERE" in partner_private_key_pem:
-        print("WARNING: No partner private key provided — skipping Signature header")
-        signature = None
-    else:
-        signature = make_jws({}, outer_body_json, partner_private_key_pem)
+    signature = None
+    if os.path.exists("partner-key.pem"):
+        partner_private_key_pem = load_file("partner-key.pem")
+        signature = make_jws(outer_body_json, partner_private_key_pem)
         print(f"JWS Signature: {signature[:40]}...")
+    else:
+        print("WARNING: partner-key.pem not found — skipping Signature header (NIRA may reject)")
 
     # ---- Step I: POST /nira/auth ----
     headers = {
