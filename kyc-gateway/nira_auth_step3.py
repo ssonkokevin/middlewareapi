@@ -246,7 +246,7 @@ def main():
 
     url = "http://10.33.33.30:8001/nira/auth"
     print(f"\nPOST {url}")
-    resp = requests.post(url, headers=headers, content=outer_body_json, timeout=60)
+    resp = requests.post(url, headers=headers, data=outer_body_json, timeout=60)
     print(f"Status: {resp.status_code}")
     print(f"Headers: {dict(resp.headers)}")
     print(f"Body: {resp.text}")
