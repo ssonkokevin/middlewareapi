@@ -81,19 +81,26 @@ def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
 
 
 def build_inner_request(transaction_id: str, nin: str, dob: str,
-                        surname: str, given_names: str, blocks=None) -> dict:
+                        surname: str, given_names: str, blocks=None,
+                        domain_uri=None) -> dict:
     """Build the inner (plaintext) NIRA AUTH request.
 
     Includes the MOSIP SBI-signed biometric blocks when provided, so the
     fingerprint is captured within the ~30-second freshness window.
+
+    `domain_uri` defaults to the NIRA Pre-Production base URL but can be
+    overridden via the DOMAIN_URI env var (e.g. to test UCC base URL).
     """
+    if domain_uri is None:
+        domain_uri = os.environ.get("DOMAIN_URI",
+                                    "https://api-internal-preprod.nsis.nira.go.ug")
     request = {
         "id": "mosip.identity.auth",
         "version": "1.0",
         "transactionID": transaction_id,
         "requestTime": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "env": "Pre-Production",
-        "domainUri": "https://api-internal-preprod.nsis.nira.go.ug",
+        "domainUri": domain_uri,
         "individualId": nin.lower() + "@nin",
         "individualIdType": "HANDLE",
         "consentObtained": True,
