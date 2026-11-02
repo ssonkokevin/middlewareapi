@@ -9,11 +9,13 @@ Client-side crypto required (cannot be done with curl alone):
   5. Signature       = detached JWS over the request body
 
 Run on the server:
-  python3 nira_auth_step3.py <token> <nin> <dob> <surname> <given_names>
+  python3 nira_auth_step3.py <token> <nin> <dob> <surname> <given_names> \
+      --cert nira-cert.pem --key partner-key.pem --blocks blocks.json
 
-Files needed in the same directory:
+Files needed:
   nira-cert.pem   — NIRA encryption certificate from GET /nira/certificate response
-  partner-key.pem — Partner private key (BEGIN PRIVATE KEY) for JWS signing (optional)
+  partner-key.pem — Partner private key (BEGIN PRIVATE KEY) for JWS signing
+  blocks.json     — Biometric blocks from MOSIP SBI capture (optional)
 
 Dependencies: cryptography pyjwt requests
 """
@@ -24,6 +26,7 @@ import base64
 import hashlib
 import os
 import uuid
+import argparse
 from datetime import datetime, timezone
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -41,6 +44,11 @@ def b64url_encode(data: bytes) -> str:
 def load_file(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+def load_json_file(path: str):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def compute_thumbprint(cert_pem: str) -> str:
@@ -74,9 +82,13 @@ def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
 
 
 def build_inner_request(transaction_id: str, nin: str, dob: str,
-                        surname: str, given_names: str) -> dict:
-    """Build the inner (plaintext) NIRA AUTH request."""
-    return {
+                        surname: str, given_names: str, blocks=None) -> dict:
+    """Build the inner (plaintext) NIRA AUTH request.
+
+    Includes the MOSIP SBI-signed biometric blocks when provided, so the
+    fingerprint is captured within the ~30-second freshness window.
+    """
+    request = {
         "id": "mosip.identity.auth",
         "version": "1.0",
         "transactionID": transaction_id,
@@ -93,6 +105,13 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
             "nin": nin.upper(),
         },
     }
+    if blocks:
+        request["biometric"] = {
+            "biometric_type": "FINGERPRINT",
+            "format": "MOSIP_SBI_SIGNED",
+            "blocks": blocks,
+        }
+    return request
 
 
 def make_jws(payload: bytes, private_key_pem: str) -> str:
@@ -111,16 +130,27 @@ def make_jws(payload: bytes, private_key_pem: str) -> str:
 
 
 def main():
-    if len(sys.argv) < 6:
-        print("Usage: python3 nira_auth_step3.py <token> <nin> <dob> <surname> <given_names>")
-        print("Example: python3 nira_auth_step3.py <JWT> CM702356039748 11/06/1970 SSONKO KEVIN")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="NIRA Step 3: POST /nira/auth with client-side crypto"
+    )
+    parser.add_argument("token", help="Step 1 JWT bearer token")
+    parser.add_argument("nin", help="National ID number (e.g. CM702356039748)")
+    parser.add_argument("dob", help="Date of birth (e.g. 11/06/1970)")
+    parser.add_argument("surname", help="Surname (e.g. SSONKO)")
+    parser.add_argument("given_names", help="Given names (e.g. KEVIN)")
+    parser.add_argument("--cert", default="nira-cert.pem",
+                        help="Path to NIRA certificate PEM (default: nira-cert.pem)")
+    parser.add_argument("--key", default="partner-key.pem",
+                        help="Path to partner private key PEM (default: partner-key.pem)")
+    parser.add_argument("--blocks", default="blocks.json",
+                        help="Path to MOSIP SBI blocks JSON (default: blocks.json)")
+    args = parser.parse_args()
 
-    token = sys.argv[1]
-    nin = sys.argv[2]
-    dob = sys.argv[3]
-    surname = sys.argv[4]
-    given_names = sys.argv[5]
+    token = args.token
+    nin = args.nin
+    dob = args.dob
+    surname = args.surname
+    given_names = args.given_names
 
     # NIRA credentials from hamiltel.properties
     misp_license_key = "bkWwgkd0mW2GLNF9gSMUJNYFdp75D7zaQoteGa0w3u4d3Qt0qY"
@@ -129,11 +159,11 @@ def main():
     vendor_api_key = "1774eb6283f6202ed9b9d7705583a731c7d03ad8ca2fedd26d7f7413539ee547"
 
     # ---- Step A: Load NIRA certificate from file ----
-    if not os.path.exists("nira-cert.pem"):
-        print("ERROR: nira-cert.pem not found. Save the Step 2 certificate PEM to nira-cert.pem")
+    if not os.path.exists(args.cert):
+        print(f"ERROR: {args.cert} not found. Save the Step 2 certificate PEM there.")
         sys.exit(1)
-    niracert_pem = load_file("nira-cert.pem")
-    print(f"Loaded NIRA certificate from nira-cert.pem")
+    niracert_pem = load_file(args.cert)
+    print(f"Loaded NIRA certificate from {args.cert}")
 
     # ---- Step B: Compute thumbprint ----
     thumbprint = compute_thumbprint(niracert_pem)
@@ -144,22 +174,32 @@ def main():
     request_session_key = encrypt_session_key(session_key, niracert_pem)
     print(f"requestSessionKey (RSA-OAEP encrypted): {request_session_key[:40]}...")
 
-    # ---- Step D: Build inner request ----
-    transaction_id = str(uuid.uuid4().int)[:10]
-    inner_request = build_inner_request(transaction_id, nin, dob, surname, given_names)
-    inner_request_json = json.dumps(inner_request, separators=(",", ":")).encode("utf-8")
-    print(f"Inner request: {inner_request_json[:200]}...")
+    # ---- Step D: Load biometric blocks (fingerprint capture) ----
+    blocks = None
+    if os.path.exists(args.blocks):
+        blocks = load_json_file(args.blocks)
+        print(f"Loaded {len(blocks)} biometric block(s) from {args.blocks}")
+    else:
+        print(f"WARNING: {args.blocks} not found — proceeding without biometric "
+              f"(NIRA may reject due to 30-second freshness window)")
 
-    # ---- Step E: Compute requestHMAC ----
+    # ---- Step E: Build inner request ----
+    transaction_id = str(uuid.uuid4().int)[:10]
+    inner_request = build_inner_request(transaction_id, nin, dob, surname,
+                                        given_names, blocks=blocks)
+    inner_request_json = json.dumps(inner_request, separators=(",", ":")).encode("utf-8")
+    print(f"Inner request: {inner_request_json[:300]}...")
+
+    # ---- Step F: Compute requestHMAC ----
     digest = hashlib.sha256(inner_request_json).hexdigest().upper()
     request_hmac = aes_gcm_encrypt(digest.encode("utf-8"), session_key)
     print(f"requestHMAC (AES-GCM of uppercase SHA-256): {request_hmac[:40]}...")
 
-    # ---- Step F: Compute encrypted request field ----
+    # ---- Step G: Compute encrypted request field ----
     request_field = aes_gcm_encrypt(inner_request_json, session_key)
     print(f"request (AES-GCM encrypted payload): {request_field[:40]}...")
 
-    # ---- Step G: Build outer request body ----
+    # ---- Step H: Build outer request body ----
     outer_body = {
         "id": "mosip.identity.auth",
         "version": "1.0",
@@ -178,16 +218,17 @@ def main():
     outer_body_json = json.dumps(outer_body, separators=(",", ":")).encode("utf-8")
     print(f"Outer body size: {len(outer_body_json)} bytes")
 
-    # ---- Step H: Create JWS signature ----
+    # ---- Step I: Create JWS signature ----
     signature = None
-    if os.path.exists("partner-key.pem"):
-        partner_private_key_pem = load_file("partner-key.pem")
+    if os.path.exists(args.key):
+        partner_private_key_pem = load_file(args.key)
         signature = make_jws(outer_body_json, partner_private_key_pem)
         print(f"JWS Signature: {signature[:40]}...")
     else:
-        print("WARNING: partner-key.pem not found — skipping Signature header (NIRA may reject)")
+        print(f"WARNING: {args.key} not found — skipping Signature header "
+              f"(NIRA may reject)")
 
-    # ---- Step I: POST /nira/auth ----
+    # ---- Step J: POST /nira/auth ----
     headers = {
         "X-API-Key": vendor_api_key,
         "X-MISP-License-Key": misp_license_key,
