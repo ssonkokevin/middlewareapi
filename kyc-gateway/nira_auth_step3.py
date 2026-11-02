@@ -85,16 +85,17 @@ def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
 
 
 def build_inner_request(transaction_id: str, nin: str, dob: str,
-                        surname: str, given_names: str, blocks=None) -> dict:
+                        surname: str, given_names: str, blocks=None,
+                        domain_uri=None) -> dict:
     """Build the inner (plaintext) NIRA AUTH request.
 
     Includes the MOSIP SBI-signed biometric blocks when provided, so the
     fingerprint is captured within the ~30-second freshness window.
 
-    `domainUri` uses the UCC_BASE_URL env var (default NIRA base URL).
+    `domain_uri` defaults to the NIRA Pre-Production base URL.
     """
-    domain_uri = os.environ.get("UCC_BASE_URL",
-                                "https://api-internal-preprod.nsis.nira.go.ug")
+    if domain_uri is None:
+        domain_uri = "https://api-internal-preprod.nsis.nira.go.ug"
     request = {
         "id": "mosip.identity.auth",
         "version": "1.0",
@@ -171,6 +172,10 @@ def main():
     partner_api_key = "266950"
     vendor_api_key = "1774eb6283f6202ed9b9d7705583a731c7d03ad8ca2fedd26d7f7413539ee547"
 
+    # domainUri for the NIRA auth request (UCC_BASE_URL env var)
+    domain_uri = os.environ.get("UCC_BASE_URL",
+                                "https://api-internal-preprod.nsis.nira.go.ug")
+
     # ---- Step A: Load NIRA certificate from file ----
     if not os.path.exists(args.cert):
         print(f"ERROR: {args.cert} not found. Save the Step 2 certificate PEM there.")
@@ -199,7 +204,8 @@ def main():
     # ---- Step E: Build inner request ----
     transaction_id = str(uuid.uuid4().int)[:10]
     inner_request = build_inner_request(transaction_id, nin, dob, surname,
-                                        given_names, blocks=blocks)
+                                        given_names, blocks=blocks,
+                                        domain_uri=domain_uri)
     inner_request_json = json.dumps(inner_request, separators=(",", ":")).encode("utf-8")
     print(f"Inner request: {inner_request_json[:300]}...")
 
@@ -219,7 +225,7 @@ def main():
         "transactionID": transaction_id,
         "requestTime": inner_request["requestTime"],
         "env": "Pre-Production",
-        "domainUri": "https://api-internal-preprod.nsis.nira.go.ug",
+        "domainUri": domain_uri,
         "individualId": nin.lower() + "@nin",
         "individualIdType": "HANDLE",
         "consentObtained": True,
