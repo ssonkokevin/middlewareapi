@@ -245,8 +245,7 @@ def main():
     if signature:
         headers["Signature"] = signature
 
-    ucc_base = os.environ.get("UCC_BASE_URL", "http://192.168.5.18")
-    url = f"{ucc_base}/api/v1/kyc/nira/auth"
+    url = "http://10.33.33.30:8001/nira/auth"
     print(f"\nPOST {url}")
     resp = requests.post(url, headers=headers, data=outer_body_json, timeout=60)
     print(f"Status: {resp.status_code}")
