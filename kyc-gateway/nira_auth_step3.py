@@ -33,7 +33,6 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.x509 import load_pem_x509_certificate
-import jwt
 import requests
 
 
@@ -115,18 +114,23 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
 
 
 def make_jws(payload: bytes, private_key_pem: str) -> str:
-    """Create a detached JWS (RS256) over the payload."""
+    """Create a detached JWS (RS256) signature over the raw payload bytes.
+
+    Returns: base64url(header)..base64url(signature)  (detached, empty payload)
+    """
     private_key = serialization.load_pem_private_key(
         private_key_pem.encode("utf-8"), password=None
     )
-    token = jwt.encode(
-        {},
-        payload,
-        algorithm="RS256",
-        key=private_key,
-        headers={"typ": "JWT", "cty": "json"},
+    header = {"alg": "RS256", "typ": "JWT", "cty": "json"}
+    header_b64 = b64url_encode(
+        json.dumps(header, separators=(",", ":")).encode("utf-8")
     )
-    return token
+    signing_input = (header_b64 + "..").encode("ascii")
+    signature = private_key.sign(
+        signing_input, padding.PKCS1v15(), hashes.SHA256()
+    )
+    sig_b64 = b64url_encode(signature)
+    return header_b64 + ".." + sig_b64
 
 
 def main():
