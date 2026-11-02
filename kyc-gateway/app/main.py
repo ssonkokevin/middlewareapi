@@ -83,6 +83,7 @@ def _ucc_request_headers(request: Request, ucc_api_key: str) -> dict[str, str]:
         "Content-Type", "Accept", "Idempotency-Key", "X-Request-ID",
         "X-Client-ID", "X-Secret-Key", "X-App-ID",
         "X-MISP-License-Key", "X-Partner-ID", "X-Partner-API-Key", "Signature",
+        "Authorization",
     )
     headers = {
         name: value
