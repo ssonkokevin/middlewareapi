@@ -114,9 +114,9 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
 
 
 def make_jws(payload: bytes, private_key_pem: str) -> str:
-    """Create a detached JWS (RS256) signature over the raw payload bytes.
+    """Create a standard JWS compact serialization (RS256).
 
-    Returns: base64url(header)..base64url(signature)  (detached, empty payload)
+    Returns: base64url(header).base64url(payload).base64url(signature)
     """
     private_key = serialization.load_pem_private_key(
         private_key_pem.encode("utf-8"), password=None
@@ -125,12 +125,13 @@ def make_jws(payload: bytes, private_key_pem: str) -> str:
     header_b64 = b64url_encode(
         json.dumps(header, separators=(",", ":")).encode("utf-8")
     )
-    signing_input = (header_b64 + "..").encode("ascii")
+    payload_b64 = b64url_encode(payload)
+    signing_input = (header_b64 + "." + payload_b64).encode("ascii")
     signature = private_key.sign(
         signing_input, padding.PKCS1v15(), hashes.SHA256()
     )
     sig_b64 = b64url_encode(signature)
-    return header_b64 + ".." + sig_b64
+    return header_b64 + "." + payload_b64 + "." + sig_b64
 
 
 def main():
