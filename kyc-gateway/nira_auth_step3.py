@@ -59,15 +59,25 @@ def load_json_file(path: str):
         return json.load(f)
 
 
-def extract_block_metadata(blocks: list) -> tuple:
+def extract_block_metadata(blocks) -> tuple:
     """Decode the first Mosip block's JWT data field to extract
     transactionId and env for binding with the outer request.
 
-    Returns: (transaction_id, env)
+    blocks may be a list of blocks or a dict with a "biometrics" key.
+
+    Returns: (transaction_id, env) or (None, None)
     """
-    if not blocks:
+    if isinstance(blocks, dict):
+        block_list = blocks.get("biometrics", [])
+    elif isinstance(blocks, list):
+        block_list = blocks
+    else:
         return None, None
-    block = blocks[0]
+
+    if not block_list:
+        return None, None
+
+    block = block_list[0]
     data_jwt = block.get("data", "")
     parts = data_jwt.split(".")
     if len(parts) < 2:
