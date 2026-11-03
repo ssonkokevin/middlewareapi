@@ -172,8 +172,8 @@ def main():
     partner_api_key = "266950"
     vendor_api_key = "1774eb6283f6202ed9b9d7705583a731c7d03ad8ca2fedd26d7f7413539ee547"
 
-    # domainUri for the NIRA auth request (UCC_BASE_URL env var)
-    domain_uri = os.environ.get("UCC_BASE_URL",
+    # domainUri for the NIRA auth request (DOMAIN_URI env var)
+    domain_uri = os.environ.get("DOMAIN_URI",
                                 "https://api-internal-preprod.nsis.nira.go.ug")
 
     # ---- Step A: Load NIRA certificate from file ----
