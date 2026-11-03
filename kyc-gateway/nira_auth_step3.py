@@ -171,11 +171,7 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
             "dateOfBirth": dob,
             "nin": nin.upper(),
         },
-        "biometric": {
-            "biometric_type": "FINGERPRINT",
-            "format": "MOSIP_SBI_SIGNED",
-            "blocks": biometric_blocks,
-        },
+        "biometrics": biometric_blocks,
     }
 
 
@@ -322,8 +318,6 @@ def main():
         "individualIdType": "HANDLE",
         "consentObtained": True,
         "requestedAuth": {
-            "otp": False,
-            "demo": False,
             "bio": True,
         },
         "thumbprint": thumbprint,
