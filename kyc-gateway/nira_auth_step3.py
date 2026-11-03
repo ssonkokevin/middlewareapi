@@ -59,6 +59,24 @@ def load_json_file(path: str):
         return json.load(f)
 
 
+def extract_block_metadata(blocks: list) -> tuple:
+    """Decode the first Mosip block's JWT data field to extract
+    transactionId and env for binding with the outer request.
+
+    Returns: (transaction_id, env)
+    """
+    if not blocks:
+        return None, None
+    block = blocks[0]
+    data_jwt = block.get("data", "")
+    parts = data_jwt.split(".")
+    if len(parts) < 2:
+        return None, None
+    payload_b64 = parts[1] + "=="
+    payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+    return payload.get("transactionId"), payload.get("env")
+
+
 def compute_thumbprint(cert_pem: str) -> str:
     """SHA-256 of the DER-encoded certificate, lowercase hex."""
     cert = load_pem_x509_certificate(cert_pem.encode("utf-8"))
@@ -96,13 +114,14 @@ def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
 
 def build_inner_request(transaction_id: str, nin: str, dob: str,
                         surname: str, given_names: str, blocks=None,
-                        domain_uri=None) -> dict:
+                        domain_uri=None, env="Pre-Production") -> dict:
     """Build the inner (plaintext) NIRA AUTH request.
 
     Includes the MOSIP SBI-signed biometric blocks when provided, so the
     fingerprint is captured within the ~30-second freshness window.
 
     `domain_uri` defaults to the NIRA Pre-Production base URL.
+    `env` defaults to "Pre-Production" but should match the block's data.env.
     """
     if domain_uri is None:
         domain_uri = "https://api-internal-preprod.nsis.nira.go.ug"
@@ -111,7 +130,7 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
         "version": "1.0",
         "transactionID": transaction_id,
         "requestTime": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-        "env": "Pre-Production",
+        "env": env,
         "domainUri": domain_uri,
         "individualId": nin.lower() + "@nin",
         "individualIdType": "HANDLE",
@@ -215,18 +234,26 @@ def main():
 
     # ---- Step D: Load biometric blocks (fingerprint capture) ----
     blocks = None
+    block_transaction_id = None
+    block_env = None
     if os.path.exists(args.blocks):
         blocks = load_json_file(args.blocks)
         print(f"Loaded {len(blocks)} biometric block(s) from {args.blocks}")
+        block_transaction_id, block_env = extract_block_metadata(blocks)
+        if block_transaction_id:
+            print(f"Block transactionId: {block_transaction_id}")
+        if block_env:
+            print(f"Block env: {block_env}")
     else:
         print(f"WARNING: {args.blocks} not found — proceeding without biometric "
               f"(NIRA may reject due to 30-second freshness window)")
 
     # ---- Step E: Build inner request ----
-    transaction_id = str(uuid.uuid4().int)[:10]
+    transaction_id = block_transaction_id or str(uuid.uuid4().int)[:10]
+    env = block_env or "Pre-Production"
     inner_request = build_inner_request(transaction_id, nin, dob, surname,
                                         given_names, blocks=blocks,
-                                        domain_uri=domain_uri)
+                                        domain_uri=domain_uri, env=env)
     inner_request_json = json.dumps(inner_request, separators=(",", ":")).encode("utf-8")
     print(f"Inner request: {inner_request_json[:300]}...")
 
@@ -245,7 +272,7 @@ def main():
         "version": "1.0",
         "transactionID": transaction_id,
         "requestTime": inner_request["requestTime"],
-        "env": "Pre-Production",
+        "env": env,
         "domainUri": domain_uri,
         "individualId": nin.lower() + "@nin",
         "individualIdType": "HANDLE",
