@@ -78,10 +78,10 @@ def extract_block_metadata(blocks: list) -> tuple:
 
 
 def compute_thumbprint(cert_pem: str) -> str:
-    """SHA-256 of the DER-encoded certificate, lowercase hex."""
+    """SHA-256 of the DER-encoded certificate, Base64URL without padding (43 chars)."""
     cert = load_pem_x509_certificate(cert_pem.encode("utf-8"))
     der = cert.public_bytes(serialization.Encoding.DER)
-    return hashlib.sha256(der).hexdigest()
+    return base64.urlsafe_b64encode(hashlib.sha256(der).digest()).rstrip(b"=").decode("ascii")
 
 
 def encrypt_session_key(session_key: bytes, cert_pem: str) -> str:
