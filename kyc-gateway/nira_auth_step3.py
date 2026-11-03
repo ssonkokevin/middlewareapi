@@ -281,7 +281,7 @@ def main():
         "X-MISP-License-Key": misp_license_key,
         "X-Partner-ID": partner_id,
         "X-Partner-API-Key": partner_api_key,
-        "Authorization": token,
+        "Authorization": f"Authorization={token}",
         "Content-Type": "application/json",
     }
     if signature:
