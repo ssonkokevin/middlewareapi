@@ -114,11 +114,11 @@ class OwnershipCheckResponse(BaseModel):
 
 class IsoImageBiometric(BaseModel):
     """UNHCR (and future ISO-based providers). A base64 image record, NOT a
-    minutiae template — ISO_19794_4 for fingerprint, ISO_19794_6 for iris."""
+    minutiae template — JPEG/WSQ for refugee fingerprint, ISO_19794_4/6 for iris."""
 
     biometric_type: Literal["FINGERPRINT", "IRIS"] = Field(..., example="FINGERPRINT")
-    format: Literal["ISO_19794_4", "ISO_19794_6"] = Field(..., example="ISO_19794_4")
-    data: str = Field(..., example="Uk9OQVBJU08xOTc5NDQAAAAA...")
+    format: Literal["JPEG", "WSQ", "ISO_19794_4", "ISO_19794_6"] = Field(..., example="JPEG")
+    data: str = Field(..., example="/9j/4AAQSkZJRgABAQAAAQ...")
 
 
 class SignedBlockBiometric(BaseModel):
@@ -140,6 +140,8 @@ BiometricData = Annotated[
 class IdentityVerificationRequest(BaseModel):
     id_type: IdType
     id_number: str = Field(..., example="CF123456789ABCDE")
+    first_name: str = Field(..., example="GRACE")
+    last_name: str = Field(..., example="AYO")
     transaction_id: Optional[str] = Field(
         None,
         pattern=r"^[0-9]{10}$",

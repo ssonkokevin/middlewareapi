@@ -61,9 +61,9 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
         # timestamp field to compare against arrival time (only an opaque
         # transaction_id). Documented gap — see config.NIRA_FRESHNESS_WINDOW_SECONDS.
     elif payload.id_type == "REFUGEE ID":
-        if payload.biometric.format not in ("ISO_19794_4", "ISO_19794_6"):
+        if payload.biometric.format not in ("JPEG", "WSQ"):
             raise KycServiceError(
-                422, "INVALID_BIOMETRIC", "REFUGEE ID requires format ISO_19794_4 or ISO_19794_6"
+                422, "INVALID_BIOMETRIC", "REFUGEE ID requires format JPEG or WSQ"
             )
 
 
