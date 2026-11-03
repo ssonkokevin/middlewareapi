@@ -1,25 +1,30 @@
 """
 Step 3: POST /nira/auth — NIRA National ID authentication.
 
-Client-side crypto required (cannot be done with curl alone):
+Client-side crypto required (per NIRA Auth Partner API Guide v1.0):
   1. thumbprint      = SHA-256 of NIRA cert (DER), lowercase hex
   2. requestSessionKey = AES session key, RSA-OAEP encrypted to NIRA cert public key
   3. requestHMAC     = AES-GCM encrypted UPPERCASE SHA-256 hex digest of inner request
   4. request         = AES-GCM encrypted biometric + demographic payload
-  5. Signature       = detached JWS over the request body
+                     Layout: ciphertext || gcm_tag || nonce (nonce at END)
+  5. Signature       = detached JWS (RS256) over request body
+                     Format: base64url(header)..base64url(signature)
+                     Header: {"alg":"RS256","x5c":["<std Base64 DER partner cert>"]}
 
 Run on the server:
   python3 nira_auth_step3.py <token> <nin> <dob> <surname> <given_names> \
-      --cert nira-cert.pem --key partner-key.pem --blocks blocks.json
+      --cert nira-cert.pem --key partner-key.pem --partner-cert partner-cert.pem \
+      --blocks blocks.json
 
 Files needed:
-  nira-cert.pem   — NIRA encryption certificate from GET /nira/certificate response
-  partner-key.pem — Partner private key (BEGIN PRIVATE KEY) for JWS signing
-  blocks.json     — Biometric blocks from MOSIP SBI capture (optional)
+  nira-cert.pem     — NIRA encryption certificate from GET /nira/certificate response
+  partner-key.pem   — Partner private key (BEGIN PRIVATE KEY) for JWS signing
+  partner-cert.pem  — Partner certificate PEM (for JWS x5c header)
+  blocks.json       — Biometric blocks from MOSIP SBI capture (optional)
 
 Environment:
-  UCC_BASE_URL — sets domainUri in the request body (default:
-                 https://api-internal-preprod.nsis.nira.go.ug)
+  DOMAIN_URI — domainUri in the request body (default:
+               https://api-internal-preprod.nsis.nira.go.ug)
 
 Dependencies: cryptography requests
 """
@@ -77,11 +82,16 @@ def encrypt_session_key(session_key: bytes, cert_pem: str) -> str:
 
 
 def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
-    """AES-256-GCM encrypt, returns base64url(nonce + ciphertext + tag)."""
+    """AES-256-GCM encrypt per NIRA spec sections 11.2 / 11.4.
+
+    Layout: ciphertext || gcm_tag || nonce (nonce at END — not beginning).
+    Base64URL-encode without padding.
+    """
     aesgcm = AESGCM(key)
     nonce = os.urandom(12)
-    ct = aesgcm.encrypt(nonce, plaintext, None)
-    return b64url_encode(nonce + ct)
+    ct_and_tag = aesgcm.encrypt(nonce, plaintext, None)  # ciphertext || tag
+    request_bytes = ct_and_tag + nonce  # ciphertext || tag || nonce
+    return b64url_encode(request_bytes)
 
 
 def build_inner_request(transaction_id: str, nin: str, dob: str,
@@ -122,15 +132,24 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
     return request
 
 
-def make_jws(payload: bytes, private_key_pem: str) -> str:
-    """Create a standard JWS compact serialization (RS256).
+def make_jws(payload: bytes, private_key_pem: str, partner_cert_pem: str) -> str:
+    """Create a detached JWS (RS256) per NIRA spec section 11.5.
 
-    Returns: base64url(header).base64url(payload).base64url(signature)
+    Header: {"alg":"RS256","x5c":["<standard Base64 DER partner cert>"]}
+    Signing input: base64url(header) + "." + base64url(request body)
+    Signature: RSASSA-PKCS1-v1_5 / SHA-256
+    Output: base64url(header)..base64url(signature)  (detached, empty payload)
     """
     private_key = serialization.load_pem_private_key(
         private_key_pem.encode("utf-8"), password=None
     )
-    header = {"alg": "RS256", "typ": "JWT", "cty": "json"}
+
+    # Partner certificate DER -> standard Base64 with padding for x5c
+    partner_cert = load_pem_x509_certificate(partner_cert_pem.encode("utf-8"))
+    cert_der = partner_cert.public_bytes(serialization.Encoding.DER)
+    cert_b64_standard = base64.b64encode(cert_der).decode("ascii")
+
+    header = {"alg": "RS256", "x5c": [cert_b64_standard]}
     header_b64 = b64url_encode(
         json.dumps(header, separators=(",", ":")).encode("utf-8")
     )
@@ -140,7 +159,7 @@ def make_jws(payload: bytes, private_key_pem: str) -> str:
         signing_input, padding.PKCS1v15(), hashes.SHA256()
     )
     sig_b64 = b64url_encode(signature)
-    return header_b64 + "." + payload_b64 + "." + sig_b64
+    return header_b64 + ".." + sig_b64
 
 
 def main():
@@ -156,6 +175,8 @@ def main():
                         help="Path to NIRA certificate PEM (default: nira-cert.pem)")
     parser.add_argument("--key", default="partner-key.pem",
                         help="Path to partner private key PEM (default: partner-key.pem)")
+    parser.add_argument("--partner-cert", default="partner-cert.pem",
+                        help="Path to partner certificate PEM for JWS x5c (default: partner-cert.pem)")
     parser.add_argument("--blocks", default="blocks.json",
                         help="Path to MOSIP SBI blocks JSON (default: blocks.json)")
     args = parser.parse_args()
@@ -239,13 +260,20 @@ def main():
 
     # ---- Step I: Create JWS signature ----
     signature = None
-    if os.path.exists(args.key):
+    if os.path.exists(args.key) and os.path.exists(args.partner_cert):
         partner_private_key_pem = load_file(args.key)
-        signature = make_jws(outer_body_json, partner_private_key_pem)
-        print(f"JWS Signature: {signature[:40]}...")
+        partner_cert_pem = load_file(args.partner_cert)
+        signature = make_jws(outer_body_json, partner_private_key_pem,
+                             partner_cert_pem)
+        print(f"JWS Signature (detached): {signature[:40]}...")
     else:
-        print(f"WARNING: {args.key} not found — skipping Signature header "
-              f"(NIRA may reject)")
+        missing = []
+        if not os.path.exists(args.key):
+            missing.append(args.key)
+        if not os.path.exists(args.partner_cert):
+            missing.append(args.partner_cert)
+        print(f"WARNING: {', '.join(missing)} not found — skipping Signature header "
+              f"(NIRA may reject with IDA-MPA-001)")
 
     # ---- Step J: POST /nira/auth ----
     headers = {
@@ -253,7 +281,7 @@ def main():
         "X-MISP-License-Key": misp_license_key,
         "X-Partner-ID": partner_id,
         "X-Partner-API-Key": partner_api_key,
-        "Authorization": f"Bearer {token}",
+        "Authorization": token,
         "Content-Type": "application/json",
     }
     if signature:
