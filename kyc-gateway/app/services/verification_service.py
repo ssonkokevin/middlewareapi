@@ -17,7 +17,12 @@ store or to any log line.
 from datetime import datetime, timezone
 
 from app.core.config import settings
-from app.schemas.kyc import IdentityVerificationData, IdentityVerificationRequest
+from app.schemas.kyc import (
+    IdentityVerificationData,
+    IdentityVerificationRequest,
+    IsoImageBiometric,
+)
+from app.services.biometric_converter import convert_biometric_if_wsq
 from app.services.db import store
 from app.services.exceptions import KycServiceError
 from app.services.provider_stub import resolve_provider, verify_with_provider
@@ -61,14 +66,48 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
         # timestamp field to compare against arrival time (only an opaque
         # transaction_id). Documented gap — see config.NIRA_FRESHNESS_WINDOW_SECONDS.
     elif payload.id_type == "REFUGEE ID":
-        if payload.biometric.format not in ("JPEG", "WSQ"):
+        if payload.biometric.format not in ("ISO_19794_4", "ISO_19794_6", "JPEG", "WSQ"):
             raise KycServiceError(
-                422, "INVALID_BIOMETRIC", "REFUGEE ID requires format JPEG or WSQ"
+                422, "INVALID_BIOMETRIC",
+                "REFUGEE ID requires format ISO_19794_4, ISO_19794_6, JPEG, or WSQ"
             )
 
 
 def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerificationData:
     _validate_biometric_shape(payload)
+
+    # NATIONAL ID requires the three-step NIRA flow via UCC
+    # (/nira/token → /nira/certificate → /nira/auth). Return VERIFICATION_REQUIRED
+    # instead of simulating a match/no-match. The vendor completes the NIRA flow
+    # and submits the resulting verification_reference to registration.
+    if payload.id_type == "NATIONAL ID":
+        return IdentityVerificationData(
+            verified=False,
+            reason_code="VERIFICATION_REQUIRED",
+            message=(
+                "National ID verification requires the three-step NIRA flow: "
+                "/nira/token → /nira/certificate → /nira/auth. "
+                "Submit the resulting verification_reference to registration."
+            ),
+            provider="NIRA",
+            provider_status="NIRA_FLOW_REQUIRED",
+            verification_reference=None,
+            verified_at=None,
+            expires_at=None,
+            matched_attributes=None,
+        )
+
+    # Convert WSQ biometric to JPEG before provider call — UCC requires JPEG
+    # for REFUGEE ID. The conversion is transparent; the stored payload still
+    # reflects the original client-submitted format.
+    biometric = payload.biometric
+    if biometric is not None and biometric.format == "WSQ":
+        converted = convert_biometric_if_wsq(biometric.model_dump())
+        payload.biometric = IsoImageBiometric(
+            biometric_type=converted["biometric_type"],
+            format=converted["format"],
+            data=converted["data"],
+        )
 
     result = verify_with_provider(payload.id_type, payload.id_number)
 
