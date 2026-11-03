@@ -2,7 +2,7 @@
 Step 3: POST /nira/auth — NIRA National ID authentication.
 
 Client-side crypto required (per NIRA Auth Partner API Guide v1.0):
-  1. thumbprint      = SHA-256 of NIRA cert (DER), Base64URL without padding
+  1. thumbprint      = SHA-256 of NIRA cert (DER), lowercase hex
   2. requestSessionKey = AES session key, RSA-OAEP encrypted to NIRA cert public key
   3. requestHMAC     = AES-GCM encrypted UPPERCASE SHA-256 hex digest of inner request
   4. request         = AES-GCM encrypted timestamp + signed biometric blocks
@@ -90,10 +90,10 @@ def extract_block_metadata(blocks) -> tuple:
 
 
 def compute_thumbprint(cert_pem: str) -> str:
-    """SHA-256 of the DER-encoded certificate, Base64URL without padding (43 chars)."""
+    """SHA-256 of the DER-encoded certificate, lowercase hex per NIRA spec section 6."""
     cert = load_pem_x509_certificate(cert_pem.encode("utf-8"))
     der = cert.public_bytes(serialization.Encoding.DER)
-    return base64.urlsafe_b64encode(hashlib.sha256(der).digest()).rstrip(b"=").decode("ascii")
+    return hashlib.sha256(der).hexdigest().lower()
 
 
 def encrypt_session_key(session_key: bytes, cert_pem: str) -> str:
@@ -170,9 +170,6 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
             "givenName": given_names,
             "dateOfBirth": dob,
             "nin": nin.upper(),
-        },
-        "requestedAuth": {
-            "bio": True,
         },
         "biometric": {
             "biometric_type": "FINGERPRINT",
