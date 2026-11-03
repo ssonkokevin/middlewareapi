@@ -122,6 +122,26 @@ def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
     return b64url_encode(request_bytes)
 
 
+def aes_gcm_decrypt(encoded: str, key: bytes) -> bytes:
+    """Reverse of aes_gcm_encrypt: base64url-decode, split ciphertext||tag||nonce."""
+    raw = base64.urlsafe_b64decode(encoded + "==")
+    nonce = raw[-12:]
+    ct_and_tag = raw[:-12]
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, ct_and_tag, None)
+
+
+def round_trip_self_test(session_key: bytes) -> bool:
+    """Encrypt then decrypt a known payload to verify the AES-GCM stack works."""
+    test = b'{"test":"round-trip"}'
+    enc = aes_gcm_encrypt(test, session_key)
+    try:
+        dec = aes_gcm_decrypt(enc, session_key)
+        return dec == test
+    except Exception:
+        return False
+
+
 def build_inner_request(transaction_id: str, nin: str, dob: str,
                         surname: str, given_names: str, blocks=None,
                         domain_uri=None, env="Pre-Production") -> dict:
@@ -247,6 +267,10 @@ def main():
     request_session_key = encrypt_session_key(session_key, niracert_pem)
     print(f"requestSessionKey (RSA-OAEP encrypted): {request_session_key[:40]}...")
 
+    # Self-test: verify AES-GCM encrypt/decrypt round-trips before sending
+    self_test_ok = round_trip_self_test(session_key)
+    print(f"AES-GCM round-trip self-test: {'PASS' if self_test_ok else 'FAIL'}")
+
     # ---- Step D: Load biometric blocks (fingerprint capture) ----
     blocks = None
     block_transaction_id = None
@@ -275,11 +299,13 @@ def main():
     # ---- Step F: Compute requestHMAC ----
     digest = hashlib.sha256(inner_request_json).hexdigest().upper()
     request_hmac = aes_gcm_encrypt(digest.encode("utf-8"), session_key)
-    print(f"requestHMAC (AES-GCM of uppercase SHA-256): {request_hmac[:40]}...")
+    print(f"requestHMAC (AES-GCM of uppercase SHA-256): {request_hmac}")
+    print(f"requestHMAC length: {len(request_hmac)} chars")
 
     # ---- Step G: Compute encrypted request field ----
     request_field = aes_gcm_encrypt(inner_request_json, session_key)
-    print(f"request (AES-GCM encrypted payload): {request_field[:40]}...")
+    print(f"request (AES-GCM encrypted payload): {request_field}")
+    print(f"request length: {len(request_field)} chars")
 
     # ---- Step H: Build outer request body ----
     outer_body = {
@@ -292,6 +318,7 @@ def main():
         "individualId": nin.lower() + "@nin",
         "individualIdType": "HANDLE",
         "consentObtained": True,
+        "requestedAuth": inner_request["requestedAuth"],
         "thumbprint": thumbprint,
         "requestSessionKey": request_session_key,
         "requestHMAC": request_hmac,
