@@ -321,7 +321,11 @@ def main():
         "individualId": nin.lower() + "@nin",
         "individualIdType": "HANDLE",
         "consentObtained": True,
-        "requestedAuth": "1",
+        "requestedAuth": {
+            "otp": False,
+            "demo": False,
+            "bio": True,
+        },
         "thumbprint": thumbprint,
         "requestSessionKey": request_session_key,
         "requestHMAC": request_hmac,
