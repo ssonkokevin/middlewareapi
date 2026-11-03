@@ -2,17 +2,17 @@
 Step 3: POST /nira/auth — NIRA National ID authentication.
 
 Client-side crypto required (per NIRA Auth Partner API Guide v1.0):
-  1. thumbprint      = SHA-256 of NIRA cert (DER), lowercase hex
+  1. thumbprint      = SHA-256 of NIRA cert (DER), Base64URL without padding
   2. requestSessionKey = AES session key, RSA-OAEP encrypted to NIRA cert public key
   3. requestHMAC     = AES-GCM encrypted UPPERCASE SHA-256 hex digest of inner request
-  4. request         = AES-GCM encrypted biometric + demographic payload
+  4. request         = AES-GCM encrypted timestamp + signed biometric blocks
                      Layout: ciphertext || gcm_tag || nonce (nonce at END)
   5. Signature       = detached JWS (RS256) over request body
                      Format: base64url(header)..base64url(signature)
                      Header: {"alg":"RS256","x5c":["<std Base64 DER partner cert>"]}
 
 Run on the server:
-  python3 nira_auth_step3.py <token> <nin> <dob> <surname> <given_names> \
+  python3 nira_auth_step3.py <token> <nin> \
       --cert nira-cert.pem --key partner-key.pem --partner-cert partner-cert.pem \
       --blocks blocks.json
 
@@ -20,7 +20,7 @@ Files needed:
   nira-cert.pem     — NIRA encryption certificate from GET /nira/certificate response
   partner-key.pem   — Partner private key (BEGIN PRIVATE KEY) for JWS signing
   partner-cert.pem  — Partner certificate PEM (for JWS x5c header)
-  blocks.json       — Biometric blocks from MOSIP SBI capture (optional)
+  blocks.json       — Signed biometric blocks from MOSIP SBI capture (required)
 
 Environment:
   DOMAIN_URI — domainUri in the request body (default:
@@ -43,6 +43,8 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.x509 import load_pem_x509_certificate
 import requests
+
+GCM_NONCE_SIZE = 16
 
 
 def b64url_encode(data: bytes) -> str:
@@ -116,7 +118,7 @@ def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
     Base64URL-encode without padding.
     """
     aesgcm = AESGCM(key)
-    nonce = os.urandom(12)
+    nonce = os.urandom(GCM_NONCE_SIZE)
     ct_and_tag = aesgcm.encrypt(nonce, plaintext, None)  # ciphertext || tag
     request_bytes = ct_and_tag + nonce  # ciphertext || tag || nonce
     return b64url_encode(request_bytes)
@@ -125,65 +127,36 @@ def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> str:
 def aes_gcm_decrypt(encoded: str, key: bytes) -> bytes:
     """Reverse of aes_gcm_encrypt: base64url-decode, split ciphertext||tag||nonce."""
     raw = base64.urlsafe_b64decode(encoded + "==")
-    nonce = raw[-12:]
-    ct_and_tag = raw[:-12]
+    nonce = raw[-GCM_NONCE_SIZE:]
+    ct_and_tag = raw[:-GCM_NONCE_SIZE]
     aesgcm = AESGCM(key)
     return aesgcm.decrypt(nonce, ct_and_tag, None)
 
 
 def round_trip_self_test(session_key: bytes) -> bool:
-    """Encrypt then decrypt a known payload to verify the AES-GCM stack works."""
+    """Verify AES-GCM round-trip and the NIRA 16-byte nonce layout."""
     test = b'{"test":"round-trip"}'
     enc = aes_gcm_encrypt(test, session_key)
-    try:
-        dec = aes_gcm_decrypt(enc, session_key)
-        return dec == test
-    except Exception:
+    raw = base64.urlsafe_b64decode(enc + "==")
+    if len(raw) != len(test) + 16 + GCM_NONCE_SIZE:
         return False
+    return aes_gcm_decrypt(enc, session_key) == test
 
 
-def build_inner_request(transaction_id: str, nin: str, dob: str,
-                        surname: str, given_names: str, blocks=None,
-                        domain_uri=None, env="Pre-Production") -> dict:
+def build_inner_request(timestamp: str, blocks) -> dict:
     """Build the inner (plaintext) NIRA AUTH request.
 
-    Includes the MOSIP SBI-signed biometric blocks when provided, so the
-    fingerprint is captured within the ~30-second freshness window.
-
-    `domain_uri` defaults to the NIRA Pre-Production base URL.
-    `env` defaults to "Pre-Production" but should match the block's data.env.
+    Preserve the MOSIP SBI-signed blocks and use the documented inner shape.
     """
-    if domain_uri is None:
-        domain_uri = "https://api-internal-preprod.nsis.nira.go.ug"
-    request = {
-        "id": "mosip.identity.auth",
-        "version": "1.0",
-        "transactionID": transaction_id,
-        "requestTime": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-        "env": env,
-        "domainUri": domain_uri,
-        "individualId": nin.lower() + "@nin",
-        "individualIdType": "HANDLE",
-        "consentObtained": True,
-        "demographic": {
-            "surname": surname,
-            "givenName": given_names,
-            "dateOfBirth": dob,
-            "nin": nin.upper(),
-        },
-        "requestedAuth": {
-            "otp": False,
-            "demo": False,
-            "bio": True,
-        },
+    biometric_blocks = (
+        blocks.get("biometrics", []) if isinstance(blocks, dict) else blocks
+    )
+    if not isinstance(biometric_blocks, list) or not biometric_blocks:
+        raise ValueError("NIRA AUTH requires at least one signed biometric block")
+    return {
+        "timestamp": timestamp,
+        "biometrics": biometric_blocks,
     }
-    if blocks:
-        request["biometric"] = {
-            "biometric_type": "FINGERPRINT",
-            "format": "MOSIP_SBI_SIGNED",
-            "blocks": blocks,
-        }
-    return request
 
 
 def make_jws(payload: bytes, private_key_pem: str, partner_cert_pem: str) -> str:
@@ -222,9 +195,6 @@ def main():
     )
     parser.add_argument("token", help="Step 1 JWT bearer token")
     parser.add_argument("nin", help="National ID number (e.g. CM702356039748)")
-    parser.add_argument("dob", help="Date of birth (e.g. 11/06/1970)")
-    parser.add_argument("surname", help="Surname (e.g. SSONKO)")
-    parser.add_argument("given_names", help="Given names (e.g. KEVIN)")
     parser.add_argument("--cert", default="nira-cert.pem",
                         help="Path to NIRA certificate PEM (default: nira-cert.pem)")
     parser.add_argument("--key", default="partner-key.pem",
@@ -237,9 +207,6 @@ def main():
 
     token = args.token
     nin = args.nin
-    dob = args.dob
-    surname = args.surname
-    given_names = args.given_names
 
     # NIRA credentials from hamiltel.properties
     misp_license_key = "bkWwgkd0mW2GLNF9gSMUJNYFdp75D7zaQoteGa0w3u4d3Qt0qY"
@@ -270,6 +237,8 @@ def main():
     # Self-test: verify AES-GCM encrypt/decrypt round-trips before sending
     self_test_ok = round_trip_self_test(session_key)
     print(f"AES-GCM round-trip self-test: {'PASS' if self_test_ok else 'FAIL'}")
+    if not self_test_ok:
+        raise RuntimeError("AES-GCM self-test failed; refusing to send AUTH request")
 
     # ---- Step D: Load biometric blocks (fingerprint capture) ----
     blocks = None
@@ -277,24 +246,30 @@ def main():
     block_env = None
     if os.path.exists(args.blocks):
         blocks = load_json_file(args.blocks)
-        print(f"Loaded {len(blocks)} biometric block(s) from {args.blocks}")
+        block_count = (
+            len(blocks.get("biometrics", []))
+            if isinstance(blocks, dict)
+            else len(blocks)
+        )
+        print(f"Loaded {block_count} biometric block(s) from {args.blocks}")
         block_transaction_id, block_env = extract_block_metadata(blocks)
         if block_transaction_id:
             print(f"Block transactionId: {block_transaction_id}")
         if block_env:
             print(f"Block env: {block_env}")
     else:
-        print(f"WARNING: {args.blocks} not found — proceeding without biometric "
-              f"(NIRA may reject due to 30-second freshness window)")
+        print(f"ERROR: {args.blocks} not found — a signed biometric block is required")
+        sys.exit(1)
 
     # ---- Step E: Build inner request ----
     transaction_id = block_transaction_id or str(uuid.uuid4().int)[:10]
     env = block_env or "Pre-Production"
-    inner_request = build_inner_request(transaction_id, nin, dob, surname,
-                                        given_names, blocks=blocks,
-                                        domain_uri=domain_uri, env=env)
+    request_time = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+    inner_request = build_inner_request(request_time, blocks)
     inner_request_json = json.dumps(inner_request, separators=(",", ":")).encode("utf-8")
-    print(f"Inner request: {inner_request_json[:300]}...")
+    print(f"Inner request size: {len(inner_request_json)} bytes")
 
     # ---- Step F: Compute requestHMAC ----
     digest = hashlib.sha256(inner_request_json).hexdigest().upper()
@@ -318,7 +293,6 @@ def main():
         "individualId": nin.lower() + "@nin",
         "individualIdType": "HANDLE",
         "consentObtained": True,
-        "requestedAuth": inner_request["requestedAuth"],
         "thumbprint": thumbprint,
         "requestSessionKey": request_session_key,
         "requestHMAC": request_hmac,
