@@ -143,10 +143,12 @@ def round_trip_self_test(session_key: bytes) -> bool:
     return aes_gcm_decrypt(enc, session_key) == test
 
 
-def build_inner_request(timestamp: str, blocks) -> dict:
-    """Build the inner (plaintext) NIRA AUTH request.
+def build_inner_request(transaction_id: str, nin: str, dob: str,
+                        surname: str, given_names: str, blocks,
+                        domain_uri: str, env: str, timestamp: str) -> dict:
+    """Build the inner (plaintext) NIRA AUTH request per spec section 8.
 
-    Preserve the MOSIP SBI-signed blocks and use the documented inner shape.
+    Structure: { "timestamp", "biometrics" } plus identity/demographic fields.
     """
     biometric_blocks = (
         blocks.get("biometrics", []) if isinstance(blocks, dict) else blocks
@@ -154,8 +156,31 @@ def build_inner_request(timestamp: str, blocks) -> dict:
     if not isinstance(biometric_blocks, list) or not biometric_blocks:
         raise ValueError("NIRA AUTH requires at least one signed biometric block")
     return {
-        "timestamp": timestamp,
-        "biometrics": biometric_blocks,
+        "id": "mosip.identity.auth",
+        "version": "1.0",
+        "transactionID": transaction_id,
+        "requestTime": timestamp,
+        "env": env,
+        "domainUri": domain_uri,
+        "individualId": nin.lower() + "@nin",
+        "individualIdType": "HANDLE",
+        "consentObtained": True,
+        "demographic": {
+            "surname": surname,
+            "givenName": given_names,
+            "dateOfBirth": dob,
+            "nin": nin.upper(),
+        },
+        "requestedAuth": {
+            "otp": False,
+            "demo": False,
+            "bio": True,
+        },
+        "biometric": {
+            "biometric_type": "FINGERPRINT",
+            "format": "MOSIP_SBI_SIGNED",
+            "blocks": biometric_blocks,
+        },
     }
 
 
@@ -195,6 +220,9 @@ def main():
     )
     parser.add_argument("token", help="Step 1 JWT bearer token")
     parser.add_argument("nin", help="National ID number (e.g. CM702356039748)")
+    parser.add_argument("dob", help="Date of birth (e.g. 11/06/1970)")
+    parser.add_argument("surname", help="Surname (e.g. SSONKO)")
+    parser.add_argument("given_names", help="Given names (e.g. KEVIN)")
     parser.add_argument("--cert", default="nira-cert.pem",
                         help="Path to NIRA certificate PEM (default: nira-cert.pem)")
     parser.add_argument("--key", default="partner-key.pem",
@@ -207,6 +235,9 @@ def main():
 
     token = args.token
     nin = args.nin
+    dob = args.dob
+    surname = args.surname
+    given_names = args.given_names
 
     # NIRA credentials from hamiltel.properties
     misp_license_key = "bkWwgkd0mW2GLNF9gSMUJNYFdp75D7zaQoteGa0w3u4d3Qt0qY"
@@ -267,7 +298,9 @@ def main():
     request_time = datetime.now(timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%S.%f"
     )[:-3] + "Z"
-    inner_request = build_inner_request(request_time, blocks)
+    inner_request = build_inner_request(transaction_id, nin, dob, surname,
+                                        given_names, blocks, domain_uri, env,
+                                        request_time)
     inner_request_json = json.dumps(inner_request, separators=(",", ":")).encode("utf-8")
     print(f"Inner request size: {len(inner_request_json)} bytes")
 
