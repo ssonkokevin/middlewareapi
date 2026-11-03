@@ -171,6 +171,11 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
             "dateOfBirth": dob,
             "nin": nin.upper(),
         },
+        "requestedAuth": {
+            "otp": False,
+            "demo": False,
+            "bio": True,
+        },
         "biometric": {
             "biometric_type": "FINGERPRINT",
             "format": "MOSIP_SBI_SIGNED",
