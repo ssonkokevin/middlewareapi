@@ -151,6 +151,11 @@ def build_inner_request(transaction_id: str, nin: str, dob: str,
             "dateOfBirth": dob,
             "nin": nin.upper(),
         },
+        "requestedAuth": {
+            "otp": False,
+            "demo": False,
+            "bio": True,
+        },
     }
     if blocks:
         request["biometric"] = {
