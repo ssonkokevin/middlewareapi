@@ -60,7 +60,6 @@ logger = logging.getLogger("kyc_gateway")
 
 _UCC_PROXY_PATHS = (
     "/ownership_check",
-    "/identity_verification",
     "/individual_registrations",
     "/corporate_registrations",
     "/compliance_report",

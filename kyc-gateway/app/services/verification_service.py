@@ -4,7 +4,12 @@ POST /identity_verification service logic.
 Processing order per the spec:
   1. Validate the request payload (handled by Pydantic schema)
   2. Select the provider from id_type
-  3. Relay the identity and biometric to that provider (simulated)
+  3. Relay the identity and biometric to that provider
+     - NATIONAL ID: full three-step NIRA flow (token → certificate → auth)
+       executed internally by app.services.nira_service.NIRAAuthenticator.
+       The vendor never handles NIRA credentials, certificates, or crypto.
+     - REFUGEE ID: relay to UNHCR via simulated provider
+     - PASSPORT/COI/REGISTRY_PENDING: VERIFICATION_UNAVAILABLE
   4. Return the outcome and, on success, a verification_reference
 
 This endpoint does NOT evaluate the ownership limit for individuals — that
@@ -25,6 +30,7 @@ from app.schemas.kyc import (
 from app.services.biometric_converter import convert_biometric_if_wsq
 from app.services.db import store
 from app.services.exceptions import KycServiceError
+from app.services.nira_service import get_nira_authenticator
 from app.services.provider_stub import resolve_provider, verify_with_provider
 
 _ORG_ID_TYPES = {"COI", "REGISTRY_PENDING"}
@@ -61,10 +67,6 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
                 422, "MISSING_FIELD",
                 "transaction_id is required when format is MOSIP_SBI_SIGNED",
             )
-        # NIRA's ~30-second freshness window cannot be enforced here: the
-        # 2.0.0 IdentityVerificationRequest schema exposes no capture
-        # timestamp field to compare against arrival time (only an opaque
-        # transaction_id). Documented gap — see config.NIRA_FRESHNESS_WINDOW_SECONDS.
     elif payload.id_type == "REFUGEE ID":
         if payload.biometric.format not in ("ISO_19794_4", "ISO_19794_6", "JPEG", "WSQ"):
             raise KycServiceError(
@@ -73,29 +75,15 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
             )
 
 
-def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerificationData:
+async def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerificationData:
     _validate_biometric_shape(payload)
 
     # NATIONAL ID requires the three-step NIRA flow via UCC
-    # (/nira/token → /nira/certificate → /nira/auth). Return VERIFICATION_REQUIRED
-    # instead of simulating a match/no-match. The vendor completes the NIRA flow
-    # and submits the resulting verification_reference to registration.
+    # (/nira/token → /nira/certificate → /nira/auth). The middleware executes
+    # the entire flow internally using stored NIRA credentials and crypto;
+    # the vendor only supplies identity + biometric blocks.
     if payload.id_type == "NATIONAL ID":
-        return IdentityVerificationData(
-            verified=False,
-            reason_code="VERIFICATION_REQUIRED",
-            message=(
-                "National ID verification requires the three-step NIRA flow: "
-                "/nira/token → /nira/certificate → /nira/auth. "
-                "Submit the resulting verification_reference to registration."
-            ),
-            provider="NIRA",
-            provider_status="NIRA_FLOW_REQUIRED",
-            verification_reference=None,
-            verified_at=None,
-            expires_at=None,
-            matched_attributes=None,
-        )
+        return await _verify_national_id(payload)
 
     # Convert WSQ biometric to JPEG before provider call — UCC requires JPEG
     # for REFUGEE ID. The conversion is transparent; the stored payload still
@@ -112,11 +100,6 @@ def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerificatio
     result = verify_with_provider(payload.id_type, payload.id_number)
 
     verified_at = datetime.now(timezone.utc).isoformat() if result.verified else None
-    # A verification_reference is issued whenever a provider decision was
-    # reached at all — including VERIFICATION_UNAVAILABLE — so registration
-    # can proceed and be recorded as unverified. It is withheld only for a
-    # live-provider non-match (IDENTITY_REJECTED), matching the "not_verified"
-    # example in the spec, which carries no verification_reference.
     issue_reference = result.reason_code != "IDENTITY_REJECTED"
 
     reference = None
@@ -144,4 +127,66 @@ def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerificatio
         verified_at=verified_at,
         expires_at=expires_at,
         matched_attributes=result.matched_attributes,
+    )
+
+
+async def _verify_national_id(payload: IdentityVerificationRequest) -> IdentityVerificationData:
+    """
+    Execute the full three-step NIRA AUTH flow internally on behalf of the
+    vendor. Returns IdentityVerificationData with the verification_reference
+    from NIRA's X-Verification-Reference response header.
+    """
+    authenticator = get_nira_authenticator()
+    try:
+        result = await authenticator.authenticate_national_id(
+            transaction_id=payload.transaction_id,
+            nin=payload.id_number,
+            dob=payload.date_of_birth or "",
+            surname=payload.last_name or "",
+            given_names=payload.first_name or "",
+            biometric_blocks=payload.biometric.blocks
+            if payload.biometric and hasattr(payload.biometric, "blocks")
+            else [],
+        )
+    except KycServiceError:
+        raise
+    except Exception as exc:
+        raise KycServiceError(
+            502, "NIRA_AUTH_ERROR", f"NIRA authentication failed: {exc}"
+        )
+
+    verified_at = datetime.now(timezone.utc).isoformat() if result["auth_status"] else None
+    issue_reference = result["auth_status"] and result["verification_reference"] is not None
+
+    reference = None
+    expires_at = None
+    if issue_reference and result["verification_reference"]:
+        entry = store.create_verification_reference(
+            id_type=payload.id_type,
+            id_number=payload.id_number,
+            provider="NIRA",
+            verified=result["auth_status"],
+            reason_code="IDENTITY_ACCEPTED" if result["auth_status"] else "IDENTITY_REJECTED",
+            ttl_hours=settings.VERIFICATION_REFERENCE_TTL_HOURS,
+            verified_at=verified_at,
+        )
+        reference = entry.reference
+        expires_at = datetime.fromtimestamp(entry.expires_at, tz=timezone.utc).isoformat()
+
+    return IdentityVerificationData(
+        verified=result["auth_status"],
+        reason_code=(
+            "IDENTITY_ACCEPTED" if result["auth_status"] else "IDENTITY_REJECTED"
+        ),
+        message=(
+            "Identity verified via NIRA"
+            if result["auth_status"]
+            else "NIRA authentication rejected"
+        ),
+        provider="NIRA",
+        provider_status="LIVE",
+        verification_reference=reference,
+        verified_at=verified_at,
+        expires_at=expires_at,
+        matched_attributes=None,
     )

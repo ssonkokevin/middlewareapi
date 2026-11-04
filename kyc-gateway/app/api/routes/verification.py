@@ -25,7 +25,7 @@ async def identity_verification(
     payload: IdentityVerificationRequest, mno: str = Depends(require_api_key)
 ):
     try:
-        data = verify_identity(payload)
+        data = await verify_identity(payload)
     except KycServiceError as exc:
         raise HTTPException(
             status_code=exc.status_code,

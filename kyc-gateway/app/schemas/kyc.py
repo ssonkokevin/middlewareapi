@@ -142,6 +142,10 @@ class IdentityVerificationRequest(BaseModel):
     id_number: str = Field(..., example="CF123456789ABCDE")
     first_name: Optional[str] = Field(None, example="JOHN", description="Required by UCC for REFUGEE ID type")
     last_name: Optional[str] = Field(None, example="KATO", description="Required by UCC for REFUGEE ID type")
+    date_of_birth: Optional[str] = Field(
+        None, example="1990-01-01",
+        description="Required for NATIONAL ID (NIRA inner request dateOfBirth).",
+    )
     transaction_id: Optional[str] = Field(
         None,
         pattern=r"^[0-9]{10}$",

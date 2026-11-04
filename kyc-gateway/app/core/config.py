@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     NIRA_KEYSTORE_PASSWORD: str = ""
     NIRA_ENV: str = "pre-production"
     NIRA_DOMAIN_URI: str = ""
+    # Paths to PEM files used for client-side NIRA AUTH crypto. The middleware
+    # loads these internally so vendors never touch certificates or keys.
+    NIRA_CERT_PATH: str = ""           # NIRA encryption certificate PEM
+    NIRA_PARTNER_KEY_PATH: str = ""    # Partner private key PEM (JWS signing)
+    NIRA_PARTNER_CERT_PATH: str = ""   # Partner certificate PEM (JWS x5c)
 
     # -------------------------------------------------------- Upstream (TBD)
     # No production or test URL has been confirmed yet for any provider.
