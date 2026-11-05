@@ -8,6 +8,8 @@ Processing order per the spec:
      - NATIONAL ID: full three-step NIRA flow (token → certificate → auth)
        executed internally by app.services.nira_service.NIRAAuthenticator.
        The vendor never handles NIRA credentials, certificates, or crypto.
+       Biometric blocks may be supplied in the request body or read from
+       blocks.json on the server (vendor pastes the captured block there).
      - REFUGEE ID: relay to UNHCR via simulated provider
      - PASSPORT/COI/REGISTRY_PENDING: VERIFICATION_UNAVAILABLE
   4. Return the outcome and, on success, a verification_reference
@@ -19,7 +21,11 @@ and validate shape; they are never written to the verification_references
 store or to any log line.
 """
 
+import binascii
+import json
+import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from app.core.config import settings
 from app.schemas.kyc import (
@@ -35,6 +41,30 @@ from app.services.nira_service import get_nira_authenticator
 from app.services.provider_stub import resolve_provider, verify_with_provider
 
 _ORG_ID_TYPES = {"COI", "REGISTRY_PENDING"}
+_BLOCKS_JSON_PATH = Path("blocks.json")
+
+
+def _read_blocks_from_file() -> list[dict]:
+    """Read signed MOSIP SBI blocks from blocks.json on the server.
+
+    The vendor pastes the captured fingerprint block into blocks.json before
+    calling POST /identity_verification. The middleware reads it here so the
+    vendor never needs to send biometric data in the request body.
+    """
+    if not _BLOCKS_JSON_PATH.exists():
+        return []
+    try:
+        with open(_BLOCKS_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(data, dict) and "biometrics" in data:
+        blocks = data["biometrics"]
+    elif isinstance(data, list):
+        blocks = data
+    else:
+        return []
+    return blocks if isinstance(blocks, list) else []
 
 
 def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
@@ -56,6 +86,8 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
         return
 
     if payload.biometric is None:
+        if payload.id_type == "NATIONAL ID" and _BLOCKS_JSON_PATH.exists():
+            return
         raise KycServiceError(422, "MISSING_FIELD", "biometric is required for this id_type")
 
     if payload.id_type == "NATIONAL ID":
@@ -63,7 +95,7 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
             raise KycServiceError(
                 422, "INVALID_BIOMETRIC", "NATIONAL ID requires format MOSIP_SBI_SIGNED"
             )
-        if not payload.transaction_id:
+        if not payload.transaction_id and not _BLOCKS_JSON_PATH.exists():
             raise KycServiceError(
                 422, "MISSING_FIELD",
                 "transaction_id is required when format is MOSIP_SBI_SIGNED",
@@ -144,16 +176,51 @@ async def _verify_national_id(payload: IdentityVerificationRequest) -> IdentityV
     reference, which registration endpoints can validate and reuse.
     """
     authenticator = get_nira_authenticator()
+
+    # Resolve biometric blocks: from request body, or from blocks.json on the server
+    biometric_blocks: list[dict] = []
+    if payload.biometric and isinstance(payload.biometric, SignedBlockBiometric):
+        biometric_blocks = payload.biometric.blocks
+    if not biometric_blocks:
+        biometric_blocks = _read_blocks_from_file()
+    if not biometric_blocks:
+        raise KycServiceError(
+            422, "MISSING_FIELD",
+            "No biometric blocks supplied — paste the signed MOSIP SBI block into blocks.json",
+        )
+
+    # Resolve transaction_id: from request body, or extract from the first block's JWT
+    transaction_id = payload.transaction_id
+    if not transaction_id:
+        first_block = biometric_blocks[0] if biometric_blocks else {}
+        data_jwt = first_block.get("data")
+        if isinstance(data_jwt, str):
+            parts = data_jwt.split(".")
+            if len(parts) == 3:
+                try:
+                    encoded_payload = parts[1]
+                    payload_bytes = base64.urlsafe_b64decode(
+                        encoded_payload + "=" * (-len(encoded_payload) % 4)
+                    )
+                    claims = json.loads(payload_bytes)
+                    if isinstance(claims, dict):
+                        transaction_id = claims.get("transactionId")
+                except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                    pass
+    if not transaction_id:
+        raise KycServiceError(
+            422, "MISSING_FIELD",
+            "transaction_id is required — could not read it from the signed block",
+        )
+
     try:
         result = await authenticator.authenticate_national_id(
-            transaction_id=payload.transaction_id,
+            transaction_id=str(transaction_id),
             nin=payload.id_number,
             date_of_birth=payload.date_of_birth or "",
             surname=payload.last_name or "",
             given_names=payload.first_name or "",
-            biometric_blocks=payload.biometric.blocks
-            if isinstance(payload.biometric, SignedBlockBiometric)
-            else [],
+            biometric_blocks=biometric_blocks,
         )
     except KycServiceError:
         raise
