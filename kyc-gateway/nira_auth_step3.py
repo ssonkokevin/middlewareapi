@@ -318,6 +318,8 @@ def main():
         "individualIdType": "HANDLE",
         "consentObtained": True,
         "requestedAuth": {
+            "otp": False,
+            "demo": False,
             "bio": True,
         },
         "thumbprint": thumbprint,

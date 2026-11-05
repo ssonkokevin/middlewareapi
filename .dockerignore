@@ -13,6 +13,8 @@ logs/
 *.db-wal
 kyc-gateway/venv/
 kyc-gateway/.env
+kyc-gateway/partner-key.pem
+kyc-gateway/partner-cert.pem
 kyc-gateway/*.db
 kyc-gateway/*.db-shm
 kyc-gateway/*.db-wal

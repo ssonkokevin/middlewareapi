@@ -1,0 +1,10 @@
+.env
+partner-key.pem
+partner-cert.pem
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-shm
+*.db-wal

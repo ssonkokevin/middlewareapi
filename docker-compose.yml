@@ -36,8 +36,22 @@ services:
       - ./kyc-gateway/.env
     environment:
       - SQLITE_PATH=/app/data/kyc_gateway.db
+      - NIRA_PARTNER_KEY_PATH=/app/partner-key.pem
+      - NIRA_PARTNER_CERT_PATH=/app/partner-cert.pem
     volumes:
       - kyc_gateway_data:/app/data
+      - type: bind
+        source: ./kyc-gateway/partner-key.pem
+        target: /app/partner-key.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./kyc-gateway/partner-cert.pem
+        target: /app/partner-cert.pem
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]

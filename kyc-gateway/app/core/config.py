@@ -55,19 +55,17 @@ class Settings(BaseSettings):
     NIRA_PARTNER_API_KEY: str = ""
     NIRA_KEYSTORE_PATH: str = ""
     NIRA_KEYSTORE_PASSWORD: str = ""
+    NIRA_PARTNER_KEY_PATH: str = ""
+    NIRA_PARTNER_CERT_PATH: str = ""
     NIRA_ENV: str = "pre-production"
     NIRA_DOMAIN_URI: str = ""
-    # Paths to PEM files used for client-side NIRA AUTH crypto. The middleware
-    # loads these internally so vendors never touch certificates or keys.
-    NIRA_CERT_PATH: str = ""           # NIRA encryption certificate PEM
-    NIRA_PARTNER_KEY_PATH: str = ""    # Partner private key PEM (JWS signing)
-    NIRA_PARTNER_CERT_PATH: str = ""   # Partner certificate PEM (JWS x5c)
 
     # -------------------------------------------------------- Upstream (TBD)
     # No production or test URL has been confirmed yet for any provider.
     # Leave blank until UCC/NIRA/UNHCR/NCIC/URSB provide real base URL(s).
-    # The gateway does not fail to start if these are empty — the service
-    # layer uses simulated provider logic instead (see provider_stub.py).
+    # The gateway does not fail to start if these are empty. Provider
+    # simulation remains available for local development; National ID uses
+    # the configured NIRA orchestration in app/services/nira_service.py.
     KYC_UPSTREAM_URL: str = ""          # e.g. https://{production-url}/api/v1/kyc — TBD
     NIRA_VALIDATE_URL: str = ""         # NIRA identity + biometric validation endpoint — TBD
     UNHCR_VALIDATE_URL: str = ""        # UNHCR identity + biometric validation endpoint — TBD

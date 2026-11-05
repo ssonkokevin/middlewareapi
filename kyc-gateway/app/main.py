@@ -21,15 +21,15 @@ Routes:
   GET    /health                                        — Service health check
   GET    /docs                                          — Swagger UI
 
-NOTE: UCC forwarding is enabled. Vendor requests are forwarded to UCC_BASE_URL
-while the middleware re-authenticates to UCC with UCC_API_KEY (not the
-vendor's X-API-Key). The vendor's key is validated locally against
-KYC_API_KEYS.
+NOTE: UCC forwarding is enabled for business operations. NATIONAL ID
+/identity_verification requests are handled locally and orchestrate NIRA's
+token → certificate → AUTH flow. Other forwarded requests authenticate to UCC
+with UCC_API_KEY, after the vendor's key is validated locally.
 
-The NIRA token (Authorization header) and verification reference
-(X-Verification-Reference header) are returned in response headers. CORS is
-placed outside the proxy middleware and exposes only those headers so
-browser-based clients can read them.
+Direct `/nira/*` proxy calls preserve the NIRA Authorization response header.
+The integrated `/identity_verification` flow returns its locally stored
+verification reference in the response body. CORS exposes the direct proxy
+headers to browser-based clients.
 
 Every endpoint requires an API key in the `X-API-Key` header (see
 app/api/deps/auth.py).
@@ -37,7 +37,7 @@ app/api/deps/auth.py).
 
 import logging
 import time
-import json
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 
@@ -72,6 +72,20 @@ _UCC_PROXY_PATHS = (
 def _is_ucc_proxy_path(path: str) -> bool:
     """Return whether a request path is a vendor KYC operation for UCC."""
     return any(path == route or path.startswith(f"{route}/") for route in _UCC_PROXY_PATHS)
+
+
+def _request_body_for_log(path: str, body: bytes) -> str:
+    if path == "/identity_verification":
+        return "[identity verification payload redacted]"
+    return body.decode("utf-8", errors="replace")
+
+
+def _response_headers_for_log(headers: Mapping[str, str]) -> dict[str, str]:
+    safe_headers = dict(headers)
+    for name in safe_headers:
+        if name.casefold() == "authorization":
+            safe_headers[name] = "[redacted]"
+    return safe_headers
 
 
 def _ucc_request_headers(request: Request, ucc_api_key: str) -> dict[str, str]:
@@ -127,8 +141,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # Expose the NIRA token and verification reference response headers so
-    # browser-based clients (as well as server clients) can read them.
+    # Expose direct NIRA proxy headers to browser-based clients.
     expose_headers=["Authorization", "X-Verification-Reference"],
 )
 
@@ -162,7 +175,7 @@ async def log_requests(request: Request, call_next):
         try:
             body = await request.body()
             if body:
-                body_str = body.decode('utf-8', errors='replace')
+                body_str = _request_body_for_log(path, body)
                 # Truncate very long bodies
                 if len(body_str) > 500:
                     body_str = body_str[:500] + "...[truncated]"
@@ -203,7 +216,7 @@ async def log_requests(request: Request, call_next):
             # Note: we can't easily read response body here without consuming it
             # For detailed response logging, it would need to be captured differently
             logger.info(
-                f"HTTP {method} {path} | Status={response.status_code} | User={user_info} IP={client_ip} | Duration={duration_ms:.4f}ms | Headers: {dict(response.headers)}",
+                f"HTTP {method} {path} | Status={response.status_code} | User={user_info} IP={client_ip} | Duration={duration_ms:.4f}ms | Headers: {_response_headers_for_log(response.headers)}",
                 extra={"detailed": True},
             )
         except Exception:
@@ -292,7 +305,7 @@ async def forward_ucc_requests(request: Request, call_next):
 
         if body and request.url.path not in ["/health"]:
             try:
-                body_str = body.decode('utf-8', errors='replace')
+                body_str = _request_body_for_log(request.url.path, body)
                 if len(body_str) > 1000:
                     body_str = body_str[:1000] + "...[truncated]"
                 logger.info(

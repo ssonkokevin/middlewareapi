@@ -52,11 +52,12 @@ returns the UCC response to the vendor.
    biometric. A successful HTTP response can still contain `verified: false`;
    check the response body.
    - For `id_type: "NATIONAL ID"`: send `first_name`, `last_name`,
-     `date_of_birth`, `transaction_id`, and signed MOSIP SBI biometric blocks.
-     The middleware executes the full three-step NIRA flow internally
-     (token → certificate → signed auth) using stored partner credentials and
-     returns an `X-Verification-Reference` header on success. You do **not**
-     handle NIRA certificates, partner keys, or cryptography.
+     `date_of_birth` in the format expected by NIRA (for example
+     `11/06/1970`), `transaction_id`, and the complete unmodified
+     `MOSIP_SBI_SIGNED` blocks. The middleware reuses a valid cached JWT when
+     available, fetches a fresh NIRA certificate for each AUTH, and returns a
+     `verification_reference` in the response body. You do **not** handle NIRA
+     certificates, partner keys, or cryptography.
    - For `id_type: "REFUGEE ID"`: send `first_name` and `last_name` (required
      by UCC). Biometric `format` accepts `ISO_19794_4`, `ISO_19794_6`, `JPEG`,
      or `WSQ`. WSQ data is auto-converted to JPEG by the gateway before
@@ -73,7 +74,7 @@ returns the UCC response to the vendor.
 
 | `id_type` | Provider | Flow |
 |---|---|---|
-| `NATIONAL ID` | NIRA | Middleware executes 3-step NIRA auth internally; returns `X-Verification-Reference` header |
+| `NATIONAL ID` | NIRA | Middleware executes 3-step NIRA auth internally; returns `verification_reference` in response body |
 | `REFUGEE ID` | UNHCR | Middleware forwards identity + biometric; returns `verification_reference` in body |
 | `PASSPORT` | NCIC | Not yet integrated (`VERIFICATION_UNAVAILABLE`) |
 
@@ -111,7 +112,6 @@ Copy `.env.example` to `.env` and configure:
 | `NIRA_MISP_LICENSE_KEY` | — | NIRA MISP license key (internal) | `*` |
 | `NIRA_PARTNER_ID` | — | NIRA partner ID (internal) | `*` |
 | `NIRA_PARTNER_API_KEY` | — | NIRA partner API key (internal) | `*` |
-| `NIRA_CERT_PATH` | — | Path to NIRA encryption certificate PEM (internal) | `nira-cert.pem` |
 | `NIRA_PARTNER_KEY_PATH` | — | Path to partner private key PEM for JWS (internal) | `partner-key.pem` |
 | `NIRA_PARTNER_CERT_PATH` | — | Path to partner certificate PEM for JWS x5c (internal) | `partner-cert.pem` |
 | `NIRA_ENV` | — | NIRA environment | `pre-production` |
@@ -131,6 +131,28 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 For Docker Compose, the `kyc-gateway` service already publishes port 8001.
+The root `docker-compose.yml` mounts the host files
+`./kyc-gateway/partner-key.pem` and `./kyc-gateway/partner-cert.pem` read-only
+at `/app/partner-key.pem` and `/app/partner-cert.pem`. The root `.dockerignore`
+`kyc-gateway/.dockerignore` excludes them from the gateway image build, so the
+running service reads the current host files rather than copies baked into an
+image. Both host files must exist before Compose starts; missing files cause
+startup to fail instead of creating empty directories.
+
+The container runs as the non-root `app` user. To grant that user read access
+without making the private key world-readable, set the files' group to the
+container process's primary group ID and grant group-read permission:
+
+```sh
+APP_GID=$(docker compose exec -T kyc-gateway id -g)
+sudo chgrp "$APP_GID" ./kyc-gateway/partner-key.pem ./kyc-gateway/partner-cert.pem
+sudo chmod 440 ./kyc-gateway/partner-key.pem ./kyc-gateway/partner-cert.pem
+docker compose exec kyc-gateway sh -c \
+  'test -f "$NIRA_PARTNER_KEY_PATH" && test -r "$NIRA_PARTNER_KEY_PATH" && test -f "$NIRA_PARTNER_CERT_PATH" && test -r "$NIRA_PARTNER_CERT_PATH"'
+```
+
+`NIRA_CERT_PATH` is not used by the current flow; NIRA's encryption certificate
+is fetched for each AUTH request.
 Ensure the middleware server owns `10.33.33.30`, TCP/8001 is permitted by the
 firewall, and the vendor server can route to it. The intended private route is
 vendor application -> `10.33.33.30:8001` -> middleware -> UCC
