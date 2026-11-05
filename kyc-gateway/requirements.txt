@@ -7,3 +7,4 @@ httpx
 typing_extensions
 Pillow
 wsq
+cryptography

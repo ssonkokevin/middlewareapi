@@ -456,14 +456,19 @@ paths:
         - Verification
       summary: Verify subscriber identity and biometric
       description: |
-        Verifies a subscriber against the relevant identity registry (NIRA, UNHCR, URSB, NCIC), and
-        returns a `verification_reference` for use at registration.
+        Verifies a subscriber against the relevant identity registry (NIRA,
+        UNHCR, URSB, NCIC), and returns a `verification_reference` for use at
+        registration. NATIONAL ID requests are handled by the gateway's
+        internal NIRA token → certificate → AUTH orchestration; vendors make
+        one call to this endpoint.
 
         Processing order:
           1. Validate the request payload
           2. Select the provider from id_type (see IDENTITY PROVIDERS in the
              API description)
-          3. Relay the identity and biometric to that provider
+          3. For NATIONAL ID, obtain/reuse a valid token, fetch a fresh NIRA
+             certificate, and submit the signed AUTH request. Other id_types
+             use their configured provider path.
           4. Return the outcome and, on success, a verification_reference
 
         This endpoint does NOT evaluate the ownership limit. That is the job of
@@ -487,7 +492,9 @@ paths:
         required: true
         description: |
           Subscriber identity plus the biometric captured for this verification.
-          The biometric format must match the provider for the given id_type.
+          NATIONAL ID requires first_name, last_name, date_of_birth,
+          transaction_id, and the complete MOSIP SBI signed block. The gateway
+          passes those signed blocks through unchanged.
         content:
           application/json:
             schema:
@@ -498,6 +505,9 @@ paths:
                 value:
                   id_type: NATIONAL ID
                   id_number: CF123456789ABCDE
+                  first_name: KEVIN
+                  last_name: SSONKO
+                  date_of_birth: "11/06/1970"
                   transaction_id: "9181672570"
                   biometric:
                     biometric_type: FINGERPRINT
@@ -639,6 +649,26 @@ paths:
                     status: error
                     error_code: INVALID_ID
                     message: Invalid id_type
+        "502":
+          description: The NIRA token, certificate, or AUTH operation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                status: error
+                error_code: VERIFICATION_UNAVAILABLE
+                message: NIRA AUTH returned errors
+        "503":
+          description: NIRA credentials or partner key files are not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                status: error
+                error_code: SYSTEM_ERROR
+                message: NIRA verification is not configured
         "500":
           description: Unexpected processing failure, or the provider was unreachable.
           content:
@@ -2248,6 +2278,21 @@ components:
           type: string
           description: Subscriber identity document number.
           example: CF123456789ABCDE
+        first_name:
+          type: string
+          nullable: true
+          description: Required for NATIONAL ID NIRA authentication and REFUGEE ID verification.
+          example: KEVIN
+        last_name:
+          type: string
+          nullable: true
+          description: Required for NATIONAL ID NIRA authentication and REFUGEE ID verification.
+          example: SSONKO
+        date_of_birth:
+          type: string
+          nullable: true
+          description: Required for NATIONAL ID NIRA authentication; pass in the date format expected by NIRA.
+          example: "11/06/1970"
         transaction_id:
           type: string
           pattern: "^[0-9]{10}$"

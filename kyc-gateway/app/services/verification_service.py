@@ -14,7 +14,7 @@ and validate shape; they are never written to the verification_references
 store or to any log line.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
 from app.schemas.kyc import (
@@ -25,6 +25,7 @@ from app.schemas.kyc import (
 from app.services.biometric_converter import convert_biometric_if_wsq
 from app.services.db import store
 from app.services.exceptions import KycServiceError
+from app.services.nira_service import get_nira_authenticator
 from app.services.provider_stub import resolve_provider, verify_with_provider
 
 _ORG_ID_TYPES = {"COI", "REGISTRY_PENDING"}
@@ -73,27 +74,49 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
             )
 
 
-def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerificationData:
+async def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerificationData:
     _validate_biometric_shape(payload)
 
-    # NATIONAL ID requires the three-step NIRA flow via UCC
-    # (/nira/token → /nira/certificate → /nira/auth). Return VERIFICATION_REQUIRED
-    # instead of simulating a match/no-match. The vendor completes the NIRA flow
-    # and submits the resulting verification_reference to registration.
     if payload.id_type == "NATIONAL ID":
+        if not payload.first_name or not payload.last_name or not payload.date_of_birth:
+            raise KycServiceError(
+                422,
+                "MISSING_FIELD",
+                "first_name, last_name, and date_of_birth are required for NATIONAL ID verification",
+            )
+        if payload.biometric is None or payload.biometric.format != "MOSIP_SBI_SIGNED":
+            raise KycServiceError(
+                422, "INVALID_BIOMETRIC", "NATIONAL ID requires a MOSIP SBI signed block"
+            )
+
+        result = await get_nira_authenticator().authenticate_national_id(
+            transaction_id=payload.transaction_id or "",
+            nin=payload.id_number,
+            date_of_birth=payload.date_of_birth,
+            surname=payload.last_name,
+            given_names=payload.first_name,
+            biometric_blocks=payload.biometric.blocks,
+        )
+        verified = result["auth_status"]
+        verified_time = datetime.now(timezone.utc) if verified else None
+        verified_at = verified_time.isoformat() if verified_time else None
+        expires_at = None
+        if verified_time:
+            expires_at = (
+                verified_time
+                + timedelta(hours=settings.VERIFICATION_REFERENCE_TTL_HOURS)
+            ).isoformat()
         return IdentityVerificationData(
-            verified=False,
-            reason_code="VERIFICATION_REQUIRED",
-            message=(
-                "National ID verification requires the three-step NIRA flow: "
-                "/nira/token → /nira/certificate → /nira/auth. "
-                "Submit the resulting verification_reference to registration."
-            ),
+            verified=verified,
+            reason_code="IDENTITY_ACCEPTED" if verified else "IDENTITY_REJECTED",
+            message="Identity verified" if verified else "Biometric did not match the identity record",
             provider="NIRA",
-            provider_status="NIRA_FLOW_REQUIRED",
-            verification_reference=None,
-            verified_at=None,
-            expires_at=None,
+            provider_status="LIVE",
+            verification_reference=(
+                result["verification_reference"] if verified else None
+            ),
+            verified_at=verified_at,
+            expires_at=expires_at,
             matched_attributes=None,
         )
 

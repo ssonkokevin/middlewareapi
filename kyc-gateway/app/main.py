@@ -21,10 +21,10 @@ Routes:
   GET    /health                                        — Service health check
   GET    /docs                                          — Swagger UI
 
-NOTE: UCC forwarding is enabled. Vendor requests are forwarded to UCC_BASE_URL
-while the middleware re-authenticates to UCC with UCC_API_KEY (not the
-vendor's X-API-Key). The vendor's key is validated locally against
-KYC_API_KEYS.
+NOTE: UCC forwarding is enabled for business operations. NATIONAL ID
+/identity_verification requests are handled locally and orchestrate NIRA's
+token → certificate → AUTH flow. Other forwarded requests authenticate to UCC
+with UCC_API_KEY, after the vendor's key is validated locally.
 
 The NIRA token (Authorization header) and verification reference
 (X-Verification-Reference header) are returned in response headers. CORS is
@@ -38,6 +38,7 @@ app/api/deps/auth.py).
 import logging
 import time
 import json
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 
@@ -73,6 +74,31 @@ _UCC_PROXY_PATHS = (
 def _is_ucc_proxy_path(path: str) -> bool:
     """Return whether a request path is a vendor KYC operation for UCC."""
     return any(path == route or path.startswith(f"{route}/") for route in _UCC_PROXY_PATHS)
+
+
+async def _is_local_nira_identity_request(request: Request) -> bool:
+    """Keep National ID verification local so it can orchestrate the NIRA flow."""
+    if request.method != "POST" or request.url.path != "/identity_verification":
+        return False
+    try:
+        body = json.loads(await request.body())
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(body, dict) and body.get("id_type") == "NATIONAL ID"
+
+
+def _request_body_for_log(path: str, body: bytes) -> str:
+    if path == "/identity_verification":
+        return "[identity verification payload redacted]"
+    return body.decode("utf-8", errors="replace")
+
+
+def _response_headers_for_log(headers: Mapping[str, str]) -> dict[str, str]:
+    safe_headers = dict(headers)
+    for name in safe_headers:
+        if name.casefold() == "authorization":
+            safe_headers[name] = "[redacted]"
+    return safe_headers
 
 
 def _ucc_request_headers(request: Request, ucc_api_key: str) -> dict[str, str]:
@@ -163,7 +189,7 @@ async def log_requests(request: Request, call_next):
         try:
             body = await request.body()
             if body:
-                body_str = body.decode('utf-8', errors='replace')
+                body_str = _request_body_for_log(path, body)
                 # Truncate very long bodies
                 if len(body_str) > 500:
                     body_str = body_str[:500] + "...[truncated]"
@@ -204,7 +230,7 @@ async def log_requests(request: Request, call_next):
             # Note: we can't easily read response body here without consuming it
             # For detailed response logging, it would need to be captured differently
             logger.info(
-                f"HTTP {method} {path} | Status={response.status_code} | User={user_info} IP={client_ip} | Duration={duration_ms:.4f}ms | Headers: {dict(response.headers)}",
+                f"HTTP {method} {path} | Status={response.status_code} | User={user_info} IP={client_ip} | Duration={duration_ms:.4f}ms | Headers: {_response_headers_for_log(response.headers)}",
                 extra={"detailed": True},
             )
         except Exception:
@@ -223,6 +249,12 @@ async def forward_ucc_requests(request: Request, call_next):
     X-API-Key, content type, request body, query string, and idempotency key.
     """
     if not settings.UCC_FORWARDING_ENABLED or not _is_ucc_proxy_path(request.url.path):
+        return await call_next(request)
+
+    # UCC's generic identity endpoint rejects NATIONAL ID. Handle it locally
+    # and let the verification service invoke NIRA's token/certificate/AUTH
+    # sequence; all other identity types retain the existing UCC proxy path.
+    if await _is_local_nira_identity_request(request):
         return await call_next(request)
 
     # Let CORS handle preflight OPTIONS before any auth check — preflight
@@ -293,7 +325,7 @@ async def forward_ucc_requests(request: Request, call_next):
 
         if body and request.url.path not in ["/health"]:
             try:
-                body_str = body.decode('utf-8', errors='replace')
+                body_str = _request_body_for_log(request.url.path, body)
                 if len(body_str) > 1000:
                     body_str = body_str[:1000] + "...[truncated]"
                 logger.info(

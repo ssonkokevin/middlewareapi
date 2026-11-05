@@ -25,8 +25,8 @@ Content-Type: application/json
 `GET /health`, `/docs`, `/redoc`, and `/openapi.json` do not require a key.
 Keys are configured by the gateway operator with `KYC_API_KEYS`; do not use
 or distribute the example `dev-local-key` outside local development.
-For each accepted vendor key, the gateway forwards the same `X-API-Key` to
-the UCC upstream at `UCC_BASE_URL` and returns the UCC response to the vendor.
+The gateway validates the vendor key locally and authenticates to UCC with its
+separate `UCC_API_KEY`.
 
 ## Main endpoints
 
@@ -58,11 +58,12 @@ the UCC upstream at `UCC_BASE_URL` and returns the UCC response to the vendor.
      by UCC). Biometric `format` accepts `ISO_19794_4`, `ISO_19794_6`, `JPEG`,
      or `WSQ`. WSQ data is auto-converted to JPEG by the gateway before
      forwarding to UCC — send whatever you have and let the gateway handle it.
-   - For `id_type: "NATIONAL ID"`: the gateway returns `VERIFICATION_REQUIRED`
-     with `provider_status: "NIRA_FLOW_REQUIRED"`. The vendor must complete the
-     three-step NIRA flow through UCC (`POST /nira/token` →
-     `GET /nira/certificate` → `POST /nira/auth`) and then submit the
-     resulting `verification_reference` to registration.
+   - For `id_type: "NATIONAL ID"`: include `first_name`, `last_name`,
+     `date_of_birth` (NIRA format, e.g. `11/06/1970`), the 10-digit
+     `transaction_id`, and the unmodified `MOSIP_SBI_SIGNED` biometric blocks.
+     The gateway obtains a token if it does not have a valid cached JWT, fetches
+     a fresh NIRA certificate, and submits the signed AUTH request. Vendors
+     call this endpoint once; NIRA credentials and tokens remain internal.
    - For all other id_types: simulated provider decision.
 3. Submit the returned `verification_reference` in the individual, corporate,
    batch, ownership-change, or full-update request. The reference is bound to
@@ -120,11 +121,17 @@ network, because API keys must not travel over an untrusted plain-HTTP path.
 
 ## NIRA Flow (NATIONAL ID)
 
-When `id_type: "NATIONAL ID"`, `POST /identity_verification` does not perform
-a simulated match. Instead it returns `200` with `verified: false`,
-`provider_status: "NIRA_FLOW_REQUIRED"`, and `reason_code:
-"VERIFICATION_REQUIRED"`. The vendor must complete the three-step flow through
-UCC proxy endpoints:
+When `id_type: "NATIONAL ID"`, call `POST /identity_verification` once after
+the MOSIP SBI fingerprint capture. Include first and last name, date of birth,
+the capture's 10-digit transaction ID, and the complete signed SBI blocks. The
+gateway preserves the blocks and performs the token → fresh certificate →
+signed AUTH sequence internally. On a match, it returns the verification
+decision and `verification_reference`; vendors do not receive or manage the
+NIRA token.
+
+The following direct `/nira/*` proxy sequence remains available for
+compatibility/manual troubleshooting. Vendors using the integrated flow above
+do not need to call these endpoints:
 
 1. `POST /nira/token` — obtain NIRA token. Send `X-Client-ID`,
    `X-Secret-Key`, `X-App-ID` headers. UCC returns an `Authorization` header.
@@ -136,16 +143,16 @@ UCC proxy endpoints:
    `X-Verification-Reference` header.
 4. Submit that `verification_reference` to `POST /individual_registrations`.
 
-The middleware validates the vendor `X-API-Key` locally, then re-authenticates
-to UCC with `UCC_API_KEY`. All three `/nira/*` paths are already in
-`_UCC_PROXY_PATHS` and are forwarded unchanged to UCC. Response headers
-`Authorization` and `X-Verification-Reference` are exposed via CORS.
+The middleware validates the vendor `X-API-Key` locally and re-authenticates
+to UCC with `UCC_API_KEY`. Other identity types retain their existing UCC
+forwarding behavior. The generic UCC identity endpoint does not accept
+`NATIONAL ID`, which is why the gateway handles that type locally.
 
 NIRA vendor credentials (`NIRA_CLIENT_ID`, `NIRA_SECRET_KEY`, `NIRA_APP_ID`,
 `NIRA_MISP_LICENSE_KEY`, `NIRA_PARTNER_ID`, `NIRA_PARTNER_API_KEY`,
-`NIRA_KEYSTORE_PATH`, `NIRA_KEYSTORE_PASSWORD`, `NIRA_ENV`, `NIRA_DOMAIN_URI`)
-are configured in `.env` and loaded via `app/core/config.py`. Never commit real
-secrets — `.env` is gitignored.
+`NIRA_PARTNER_KEY_PATH`, `NIRA_PARTNER_CERT_PATH`, `NIRA_ENV`,
+`NIRA_DOMAIN_URI`) are configured in `.env` and loaded via
+`app/core/config.py`. Never commit real secrets — `.env` is gitignored.
 
 ## Biometric Format Conversion (WSQ → JPEG)
 
