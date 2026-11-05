@@ -1,5 +1,6 @@
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -51,6 +52,13 @@ class IdentityVerificationEndpointTests(unittest.TestCase):
                 "app.services.verification_service.get_nira_authenticator",
                 return_value=authenticator,
             ),
+            patch(
+                "app.services.verification_service.store.create_verification_reference",
+                return_value=SimpleNamespace(
+                    reference="vrf_local_test",
+                    expires_at=1_999_999_999,
+                ),
+            ) as store_reference,
             patch("app.main.httpx.AsyncClient", side_effect=AssertionError("unexpected proxy call")),
         ):
             response = self.client.post(
@@ -61,6 +69,11 @@ class IdentityVerificationEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["data"]["verified"])
+        self.assertEqual(
+            response.json()["data"]["verification_reference"],
+            "vrf_local_test",
+        )
+        store_reference.assert_called_once()
         self.assertNotIn("authorization", response.headers)
         self.assertEqual(
             authenticator.calls[0]["biometric_blocks"],

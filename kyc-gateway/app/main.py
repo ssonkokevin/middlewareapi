@@ -26,10 +26,10 @@ NOTE: UCC forwarding is enabled for business operations. NATIONAL ID
 token → certificate → AUTH flow. Other forwarded requests authenticate to UCC
 with UCC_API_KEY, after the vendor's key is validated locally.
 
-The NIRA token (Authorization header) and verification reference
-(X-Verification-Reference header) are returned in response headers. CORS is
-placed outside the proxy middleware and exposes only those headers so
-browser-based clients can read them.
+Direct `/nira/*` proxy calls preserve the NIRA Authorization response header.
+The integrated `/identity_verification` flow returns its locally stored
+verification reference in the response body. CORS exposes the direct proxy
+headers to browser-based clients.
 
 Every endpoint requires an API key in the `X-API-Key` header (see
 app/api/deps/auth.py).
@@ -37,7 +37,6 @@ app/api/deps/auth.py).
 
 import logging
 import time
-import json
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -61,7 +60,6 @@ logger = logging.getLogger("kyc_gateway")
 
 _UCC_PROXY_PATHS = (
     "/ownership_check",
-    "/identity_verification",
     "/individual_registrations",
     "/corporate_registrations",
     "/compliance_report",
@@ -74,17 +72,6 @@ _UCC_PROXY_PATHS = (
 def _is_ucc_proxy_path(path: str) -> bool:
     """Return whether a request path is a vendor KYC operation for UCC."""
     return any(path == route or path.startswith(f"{route}/") for route in _UCC_PROXY_PATHS)
-
-
-async def _is_local_nira_identity_request(request: Request) -> bool:
-    """Keep National ID verification local so it can orchestrate the NIRA flow."""
-    if request.method != "POST" or request.url.path != "/identity_verification":
-        return False
-    try:
-        body = json.loads(await request.body())
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    return isinstance(body, dict) and body.get("id_type") == "NATIONAL ID"
 
 
 def _request_body_for_log(path: str, body: bytes) -> str:
@@ -154,8 +141,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # Expose the NIRA token and verification reference response headers so
-    # browser-based clients (as well as server clients) can read them.
+    # Expose direct NIRA proxy headers to browser-based clients.
     expose_headers=["Authorization", "X-Verification-Reference"],
 )
 
@@ -249,12 +235,6 @@ async def forward_ucc_requests(request: Request, call_next):
     X-API-Key, content type, request body, query string, and idempotency key.
     """
     if not settings.UCC_FORWARDING_ENABLED or not _is_ucc_proxy_path(request.url.path):
-        return await call_next(request)
-
-    # UCC's generic identity endpoint rejects NATIONAL ID. Handle it locally
-    # and let the verification service invoke NIRA's token/certificate/AUTH
-    # sequence; all other identity types retain the existing UCC proxy path.
-    if await _is_local_nira_identity_request(request):
         return await call_next(request)
 
     # Let CORS handle preflight OPTIONS before any auth check — preflight
