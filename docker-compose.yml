@@ -38,6 +38,8 @@ services:
       - SQLITE_PATH=/app/data/kyc_gateway.db
     volumes:
       - kyc_gateway_data:/app/data
+      - /opt/middleware/middlewareapi/kyc-gateway/partner-key.pem:/opt/middleware/middlewareapi/kyc-gateway/partner-key.pem:ro
+      - /opt/middleware/middlewareapi/kyc-gateway/partner-cert.pem:/opt/middleware/middlewareapi/kyc-gateway/partner-cert.pem:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]

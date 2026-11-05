@@ -131,6 +131,20 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 For Docker Compose, the `kyc-gateway` service already publishes port 8001.
+The root `docker-compose.yml` bind-mounts `partner-key.pem` and
+`partner-cert.pem` read-only at the paths configured by
+`NIRA_PARTNER_KEY_PATH` and `NIRA_PARTNER_CERT_PATH`. Keep the host files at
+those paths and ensure they are readable by the container's `app` user without
+making the private key world-readable. Check readability after starting the
+service with:
+
+```sh
+docker compose exec kyc-gateway sh -c \
+  'test -r "$NIRA_PARTNER_KEY_PATH" && test -r "$NIRA_PARTNER_CERT_PATH"'
+```
+
+`NIRA_CERT_PATH` is not used by the current flow; NIRA's encryption
+certificate is fetched for each AUTH request.
 Ensure the middleware server owns `10.33.33.30`, TCP/8001 is permitted by the
 firewall, and the vendor server can route to it. The intended private route is
 vendor application -> `10.33.33.30:8001` -> middleware -> UCC
