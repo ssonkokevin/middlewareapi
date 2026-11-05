@@ -21,6 +21,7 @@ and validate shape; they are never written to the verification_references
 store or to any log line.
 """
 
+import base64
 import binascii
 import json
 import os
