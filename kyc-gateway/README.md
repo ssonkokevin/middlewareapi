@@ -131,22 +131,28 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 For Docker Compose, the `kyc-gateway` service already publishes port 8001.
-The Docker build copies the gateway directory into `/app`, and the root
-`docker-compose.yml` configures `NIRA_PARTNER_KEY_PATH=/app/partner-key.pem`
-and `NIRA_PARTNER_CERT_PATH=/app/partner-cert.pem`. Keep both PEM files in the
-`kyc-gateway` build context on the server before building the image. Verify
-that the running container can read them with:
+The root `docker-compose.yml` mounts the host files
+`./kyc-gateway/partner-key.pem` and `./kyc-gateway/partner-cert.pem` read-only
+at `/app/partner-key.pem` and `/app/partner-cert.pem`. The root `.dockerignore`
+`kyc-gateway/.dockerignore` excludes them from the gateway image build, so the
+running service reads the current host files rather than copies baked into an
+image. Both host files must exist before Compose starts; missing files cause
+startup to fail instead of creating empty directories.
+
+The container runs as the non-root `app` user. To grant that user read access
+without making the private key world-readable, set the files' group to the
+container process's primary group ID and grant group-read permission:
 
 ```sh
+APP_GID=$(docker compose exec -T kyc-gateway id -g)
+sudo chgrp "$APP_GID" ./kyc-gateway/partner-key.pem ./kyc-gateway/partner-cert.pem
+sudo chmod 440 ./kyc-gateway/partner-key.pem ./kyc-gateway/partner-cert.pem
 docker compose exec kyc-gateway sh -c \
-  'test -r "$NIRA_PARTNER_KEY_PATH" && test -r "$NIRA_PARTNER_CERT_PATH"'
+  'test -f "$NIRA_PARTNER_KEY_PATH" && test -r "$NIRA_PARTNER_KEY_PATH" && test -f "$NIRA_PARTNER_CERT_PATH" && test -r "$NIRA_PARTNER_CERT_PATH"'
 ```
 
-The partner private key is included in the built image; restrict access to
-that image and its registry. For stronger secret handling, use Docker secrets
-or read-only mounts with permissions that allow the container's `app` user to
-read the private key. `NIRA_CERT_PATH` is not used by the current flow; NIRA's
-encryption certificate is fetched for each AUTH request.
+`NIRA_CERT_PATH` is not used by the current flow; NIRA's encryption certificate
+is fetched for each AUTH request.
 Ensure the middleware server owns `10.33.33.30`, TCP/8001 is permitted by the
 firewall, and the vendor server can route to it. The intended private route is
 vendor application -> `10.33.33.30:8001` -> middleware -> UCC
