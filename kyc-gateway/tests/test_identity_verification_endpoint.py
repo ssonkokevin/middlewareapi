@@ -79,6 +79,10 @@ class IdentityVerificationEndpointTests(unittest.TestCase):
             authenticator.calls[0]["biometric_blocks"],
             blocks,
         )
+        self.assertEqual(
+            authenticator.calls[0]["date_of_birth"],
+            payload["date_of_birth"],
+        )
         logged_body = _request_body_for_log(
             "/identity_verification", json.dumps(payload).encode("utf-8")
         )

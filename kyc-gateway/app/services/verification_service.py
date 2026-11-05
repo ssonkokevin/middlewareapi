@@ -148,7 +148,7 @@ async def _verify_national_id(payload: IdentityVerificationRequest) -> IdentityV
         result = await authenticator.authenticate_national_id(
             transaction_id=payload.transaction_id,
             nin=payload.id_number,
-            dob=payload.date_of_birth or "",
+            date_of_birth=payload.date_of_birth or "",
             surname=payload.last_name or "",
             given_names=payload.first_name or "",
             biometric_blocks=payload.biometric.blocks
