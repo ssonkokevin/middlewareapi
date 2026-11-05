@@ -194,7 +194,7 @@ class NIRAAuthenticator:
         self,
         transaction_id: str,
         nin: str,
-        dob: str,
+        date_of_birth: str,
         surname: str,
         given_names: str,
         blocks,
@@ -223,7 +223,7 @@ class NIRAAuthenticator:
             "demographic": {
                 "surname": surname,
                 "givenName": given_names,
-                "dateOfBirth": dob,
+                "dateOfBirth": date_of_birth,
                 "nin": nin.upper(),
             },
             "biometrics": biometric_blocks,
@@ -233,7 +233,7 @@ class NIRAAuthenticator:
         self,
         transaction_id: str,
         nin: str,
-        dob: str,
+        date_of_birth: str,
         surname: str,
         given_names: str,
         biometric_blocks,
@@ -265,7 +265,7 @@ class NIRAAuthenticator:
                 "%Y-%m-%dT%H:%M:%S.%f"
             )[:-3] + "Z"
             inner_request = self.build_inner_request(
-                transaction_id, nin, dob, surname, given_names,
+                transaction_id, nin, date_of_birth, surname, given_names,
                 biometric_blocks, self.domain_uri, self.env, request_time,
             )
             inner_request_json = json.dumps(

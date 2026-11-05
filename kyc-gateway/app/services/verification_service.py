@@ -19,6 +19,8 @@ and validate shape; they are never written to the verification_references
 store or to any log line.
 """
 
+import base64
+import json
 from datetime import datetime, timezone
 
 from app.core.config import settings
@@ -62,17 +64,49 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
             raise KycServiceError(
                 422, "INVALID_BIOMETRIC", "NATIONAL ID requires format MOSIP_SBI_SIGNED"
             )
-        if not payload.transaction_id:
-            raise KycServiceError(
-                422, "MISSING_FIELD",
-                "transaction_id is required when format is MOSIP_SBI_SIGNED",
-            )
     elif payload.id_type == "REFUGEE ID":
         if payload.biometric.format not in ("ISO_19794_4", "ISO_19794_6", "JPEG", "WSQ"):
             raise KycServiceError(
                 422, "INVALID_BIOMETRIC",
                 "REFUGEE ID requires format ISO_19794_4, ISO_19794_6, JPEG, or WSQ"
             )
+
+
+def _decode_block_jwt_payload(data_b64url: str) -> dict:
+    """Decode the base64url-encoded JWT payload of a biometric block (no verification).
+
+    The block's `data` field is a JWT: header.payload.signature. We only need the
+    payload claims (transactionId, env).
+    """
+    parts = data_b64url.split(".")
+    if len(parts) < 2:
+        raise KycServiceError(
+            422, "INVALID_BIOMETRIC", "Block data is not a valid JWT (missing payload)"
+        )
+    payload_b64 = parts[1]
+    padding = 4 - len(payload_b64) % 4
+    if padding != 4:
+        payload_b64 += "=" * padding
+    try:
+        payload_json = base64.urlsafe_b64decode(payload_b64)
+        return json.loads(payload_json)
+    except Exception as exc:
+        raise KycServiceError(
+            422, "INVALID_BIOMETRIC", f"Failed to decode block JWT payload: {exc}"
+        )
+
+
+def _extract_block_metadata(blocks: list) -> tuple:
+    """Extract transactionId and env from the first block's JWT data field.
+
+    Returns: (transaction_id, env) — either may be None if not present in the JWT.
+    """
+    first_block = blocks[0]
+    data_jwt = first_block.get("data", "")
+    if not data_jwt:
+        return None, None
+    claims = _decode_block_jwt_payload(data_jwt)
+    return claims.get("transactionId"), claims.get("env")
 
 
 async def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerificationData:
@@ -135,18 +169,58 @@ async def _verify_national_id(payload: IdentityVerificationRequest) -> IdentityV
     Execute the full three-step NIRA AUTH flow internally on behalf of the
     vendor. Returns IdentityVerificationData with the verification_reference
     from NIRA's X-Verification-Reference response header.
+
+    Biometric blocks come from the request body (payload.biometric.blocks).
+    The transaction_id is taken from the block JWT's data field if not
+    provided in the request body; env is validated against NIRA_ENV.
     """
     authenticator = get_nira_authenticator()
     try:
+        blocks = (
+            payload.biometric.blocks
+            if payload.biometric and hasattr(payload.biometric, "blocks")
+            else []
+        )
+        if not isinstance(blocks, list) or not blocks:
+            raise KycServiceError(
+                422, "MISSING_FIELD",
+                "NATIONAL ID requires at least one signed biometric block in the request body",
+            )
+
+        block_transaction_id, block_env = _extract_block_metadata(blocks)
+
+        # Use block JWT transactionId if body didn't provide one
+        transaction_id = payload.transaction_id or block_transaction_id
+        if not transaction_id:
+            raise KycServiceError(
+                422, "MISSING_FIELD",
+                "transaction_id is required (provide it in the body or ensure the block JWT contains one)",
+            )
+
+        # If both are present, they must match
+        if block_transaction_id and transaction_id != block_transaction_id:
+            raise KycServiceError(
+                422, "INVALID_BIOMETRIC",
+                f"transaction_id '{transaction_id}' does not match block JWT "
+                f"transactionId '{block_transaction_id}'",
+            )
+
+        # Validate block env against configured NIRA env (case-insensitive)
+        if block_env and authenticator.env:
+            if block_env.lower() != authenticator.env.lower():
+                raise KycServiceError(
+                    422, "INVALID_BIOMETRIC",
+                    f"MOSIP SBI block environment '{block_env}' does not match "
+                    f"configured NIRA environment '{authenticator.env}'"
+                )
+
         result = await authenticator.authenticate_national_id(
-            transaction_id=payload.transaction_id,
+            transaction_id=transaction_id,
             nin=payload.id_number,
-            dob=payload.date_of_birth or "",
+            date_of_birth=payload.date_of_birth or "",
             surname=payload.last_name or "",
             given_names=payload.first_name or "",
-            biometric_blocks=payload.biometric.blocks
-            if payload.biometric and hasattr(payload.biometric, "blocks")
-            else [],
+            biometric_blocks=blocks,
         )
     except KycServiceError:
         raise

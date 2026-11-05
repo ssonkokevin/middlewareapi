@@ -1,0 +1,9 @@
+[
+  {
+    "specVersion": "0.9.5",
+    "data": "<base64-encoded-signed-biometric-block-from-MOSIP-SBI-device>",
+    "hash": "<sha256-hex-of-block-data>",
+    "sessionKey": "<base64-encoded-session-key>",
+    "thumbprint": "<lowercase-hex-sha256-of-nira-cert-der>"
+  }
+]

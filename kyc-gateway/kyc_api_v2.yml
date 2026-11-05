@@ -895,8 +895,9 @@ paths:
         required: true
         description: |
           Full corporate SIM registration payload including representative
-          identity and the verification_reference issued for that representative.
-          No biometric data is carried here.
+          identity and the verification_reference issued for the organisation.
+          Representative details are recorded but are not identity- or
+          biometric-verified. No biometric data is carried here.
         content:
           application/json:
             schema:
@@ -960,19 +961,19 @@ paths:
                   value:
                     status: error
                     error_code: VERIFICATION_REQUIRED
-                    message: A verification_reference for the representative is required
+                    message: A verification_reference for the organisation is required
                 reference_mismatch:
-                  summary: Reference does not match the representative identity
+                  summary: Reference does not match the organisation identity
                   value:
                     status: error
                     error_code: VERIFICATION_REFERENCE_MISMATCH
-                    message: Verification reference does not match the representative identity
+                    message: Verification reference does not match the organisation identity
                 reference_expired:
                   summary: Reference is older than 24 hours
                   value:
                     status: error
                     error_code: VERIFICATION_REFERENCE_EXPIRED
-                    message: Verification reference expired; re-verify the representative
+                    message: Verification reference expired; re-verify the organisation
                 limit_exceeded:
                   summary: Ownership limit reached at registration time
                   value:
@@ -1576,10 +1577,10 @@ paths:
         processing. This mirrors POST /individual_registrations/batch, for operators
         that onboard companies in volume.
 
-        Every record must carry its own verification_reference for its nominated
-        representative, obtained from POST /identity_verification before the
+        Every record must carry its own verification_reference for the
+        organisation, obtained from POST /identity_verification before the
         batch is submitted. Identity verification is real time and per
-        subscriber — it is never batched.
+        organisation — it is never batched.
 
         Batch processing behavior is identical to the individual batch endpoint:
           - maximum batch size is 1000 records
@@ -2817,9 +2818,9 @@ components:
       description: |
         Batch payload containing multiple corporate registration records.
 
-        Every record carries its own verification_reference for its nominated
-        representative, and no biometric data. Identity verification is real time
-        and per subscriber, and is never performed as part of a batch.
+        Every record carries its own organisation-bound verification_reference,
+        and no biometric data. Identity verification is real time and per
+        organisation, and is never performed as part of a batch.
       required:
         - records
       properties:
