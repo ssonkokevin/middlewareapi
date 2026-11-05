@@ -189,12 +189,12 @@ async def _verify_national_id(payload: IdentityVerificationRequest) -> IdentityV
 
         block_transaction_id, block_env = _extract_block_metadata(blocks)
 
-        # Use block JWT transactionId if body didn't provide one
-        transaction_id = payload.transaction_id or block_transaction_id
+        # Prefer block JWT transactionId over body; fall back to body
+        transaction_id = block_transaction_id or payload.transaction_id
         if not transaction_id:
             raise KycServiceError(
                 422, "MISSING_FIELD",
-                "transaction_id is required (provide it in the body or ensure the block JWT contains one)",
+                "transaction_id is required (block JWT must contain one or provide it in the body)",
             )
 
         # If both are present, they must match
