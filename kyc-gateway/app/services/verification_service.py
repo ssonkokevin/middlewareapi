@@ -192,6 +192,7 @@ async def _verify_national_id(payload: IdentityVerificationRequest) -> IdentityV
 
     # Resolve transaction_id: from request body, or extract from the first block's JWT
     transaction_id = payload.transaction_id
+    block_env_debug = None
     if not transaction_id:
         first_block = biometric_blocks[0] if biometric_blocks else {}
         data_jwt = first_block.get("data")
@@ -206,6 +207,7 @@ async def _verify_national_id(payload: IdentityVerificationRequest) -> IdentityV
                     claims = json.loads(payload_bytes)
                     if isinstance(claims, dict):
                         transaction_id = claims.get("transactionId")
+                        block_env_debug = claims.get("env")
                 except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError):
                     pass
     if not transaction_id:
