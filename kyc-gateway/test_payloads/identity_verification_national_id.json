@@ -1,0 +1,21 @@
+{
+  "id_type": "NATIONAL ID",
+  "id_number": "CM702356039748",
+  "first_name": "KEVIN",
+  "last_name": "SSONKO",
+  "date_of_birth": "1970-11-06",
+  "transaction_id": "1234567890",
+  "biometric": {
+    "biometric_type": "FINGERPRINT",
+    "format": "MOSIP_SBI_SIGNED",
+    "blocks": [
+      {
+        "specVersion": "0.9.5",
+        "data": "<base64-encoded-signed-biometric-block-from-MOSIP-SBI-device>",
+        "hash": "<sha256-hex-of-block-data>",
+        "sessionKey": "<base64-encoded-session-key>",
+        "thumbprint": "<lowercase-hex-sha256-of-nira-cert-der>"
+      }
+    ]
+  }
+}

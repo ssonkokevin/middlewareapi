@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     NIRA_KEYSTORE_PASSWORD: str = ""
     NIRA_PARTNER_KEY_PATH: str = ""
     NIRA_PARTNER_CERT_PATH: str = ""
+    NIRA_CERT_PATH: str = ""
     NIRA_ENV: str = "pre-production"
     NIRA_DOMAIN_URI: str = ""
 
