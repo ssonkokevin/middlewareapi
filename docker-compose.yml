@@ -36,17 +36,10 @@ services:
       - ./kyc-gateway/.env
     environment:
       - SQLITE_PATH=/app/data/kyc_gateway.db
-      - NIRA_CERT_PATH=/app/nira-cert.pem
       - NIRA_PARTNER_KEY_PATH=/app/partner-key.pem
       - NIRA_PARTNER_CERT_PATH=/app/partner-cert.pem
     volumes:
       - kyc_gateway_data:/app/data
-      - type: bind
-        source: ./kyc-gateway/nira-cert.pem
-        target: /app/nira-cert.pem
-        read_only: true
-        bind:
-          create_host_path: false
       - type: bind
         source: ./kyc-gateway/partner-key.pem
         target: /app/partner-key.pem

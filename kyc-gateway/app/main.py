@@ -142,13 +142,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     # Expose direct NIRA proxy headers to browser-based clients.
-    expose_headers=["Authorization", "X-Verification-Reference"],
+    expose_headers=[
+        "Authorization",
+        "X-Verification-Reference",
+        "X-Response-Time-Ms",
+    ],
 )
 
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    start_time = time.time()
+    start_time = time.perf_counter()
     
     # Get client info
     client_ip = request.headers.get(
@@ -189,14 +193,15 @@ async def log_requests(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as e:
-        duration_ms = (time.time() - start_time) * 1000
+        duration_ms = (time.perf_counter() - start_time) * 1000
         logger.error(
             f"HTTP {method} {path} | User={user_info} IP={client_ip} | Duration={duration_ms:.0f}ms | Exception: {str(e)}",
             extra={"detailed": True},
         )
         raise
     
-    duration_ms = (time.time() - start_time) * 1000
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    response.headers["X-Response-Time-Ms"] = f"{duration_ms:.3f}"
     
     # Log response
     if response.status_code >= 400:

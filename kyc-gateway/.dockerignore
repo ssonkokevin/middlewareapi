@@ -1,4 +1,5 @@
 .env
+nira-cert.pem
 partner-key.pem
 partner-cert.pem
 venv/

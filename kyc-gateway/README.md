@@ -54,9 +54,9 @@ returns the UCC response to the vendor.
    - For `id_type: "NATIONAL ID"`: send `first_name`, `last_name`,
      `date_of_birth` in the format expected by NIRA (for example
      `11/06/1970`), `transaction_id`, and the complete unmodified
-     `MOSIP_SBI_SIGNED` blocks. The middleware reuses a valid cached JWT when
-     available, fetches a fresh NIRA certificate for each AUTH, and returns a
-     `verification_reference` in the response body. You do **not** handle NIRA
+     `MOSIP_SBI_SIGNED` blocks. For each verification, the middleware requests
+     a NIRA token, fetches a fresh NIRA certificate, submits AUTH, and returns
+     a `verification_reference` in the response body. You do **not** handle NIRA
      certificates, partner keys, or cryptography.
    - For `id_type: "REFUGEE ID"`: send `first_name` and `last_name` (required
      by UCC). Biometric `format` accepts `ISO_19794_4`, `ISO_19794_6`, `JPEG`,

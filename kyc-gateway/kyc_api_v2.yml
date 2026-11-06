@@ -466,10 +466,14 @@ paths:
           1. Validate the request payload
           2. Select the provider from id_type (see IDENTITY PROVIDERS in the
              API description)
-          3. For NATIONAL ID, obtain/reuse a valid token, fetch a fresh NIRA
+          3. For NATIONAL ID, obtain a NIRA token, fetch a fresh NIRA
              certificate, and submit the signed AUTH request. Other id_types
              use their configured provider path.
           4. Return the outcome and, on success, a verification_reference
+
+        Every response includes the X-Response-Time-Ms header, reporting
+        gateway-side processing time in milliseconds. Client-observed end-to-end
+        time also includes network latency.
 
         This endpoint does NOT evaluate the ownership limit. That is the job of
         POST /ownership_check, and of the check performed at registration commit.
@@ -548,6 +552,12 @@ paths:
           description: |
             Verification completed. Inspect data.verified — a non-match is a
             successful request, not an error.
+          headers:
+            X-Response-Time-Ms:
+              description: Gateway-side processing duration in milliseconds.
+              schema:
+                type: string
+              example: "13540.253"
           content:
             application/json:
               schema:

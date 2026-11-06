@@ -63,11 +63,16 @@ Follow this sequence for a complete individual SIM registration:
 
 For a Ugandan National ID, capture the fingerprint using the supported MOSIP SBI
 device, then call `POST /identity_verification` once. The gateway internally
-obtains a NIRA token when needed, fetches a fresh NIRA encryption certificate
+obtains a NIRA token, fetches a fresh NIRA encryption certificate
 for each authentication request, creates the signed AUTH request, and returns
 the verification result. Vendors do not call the `/nira/token`,
 `/nira/certificate`, or `/nira/auth` endpoints for this integrated workflow and
 must not send NIRA partner credentials or tokens.
+
+The gateway returns `X-Response-Time-Ms` on API responses. This is server-side
+processing time in milliseconds; use curl's `time_total` to include network
+latency in the measurement. The `verification_reference` is returned in the
+JSON response body, not in an `X-Verification-Reference` response header.
 
 The request must include:
 

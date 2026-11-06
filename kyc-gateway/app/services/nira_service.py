@@ -44,6 +44,43 @@ def _load_file(path: str) -> str:
         return f.read()
 
 
+def _normalize_certificate_pem(certificate: str) -> str:
+    """Normalize plain, JSON-string, and literal-escaped PEM line endings."""
+    try:
+        decoded = json.loads(certificate)
+    except json.JSONDecodeError:
+        decoded = certificate
+
+    if isinstance(decoded, str):
+        certificate = decoded
+    else:
+        raise KycServiceError(
+            502,
+            "NIRA_CERT_INVALID",
+            "NIRA certificate response is not a PEM certificate",
+        )
+
+    certificate = certificate.strip()
+    if "\\n" in certificate or "\\r" in certificate:
+        certificate = (
+            certificate.replace("\\r\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\\r", "\n")
+            .strip()
+        )
+
+    if not (
+        certificate.startswith("-----BEGIN CERTIFICATE-----")
+        and "-----END CERTIFICATE-----" in certificate
+    ):
+        raise KycServiceError(
+            502,
+            "NIRA_CERT_INVALID",
+            "NIRA certificate response is not a PEM certificate",
+        )
+    return certificate + "\n"
+
+
 class NIRAAuthenticator:
     """Orchestrates the three-step NIRA AUTH flow using stored credentials."""
 
@@ -59,7 +96,6 @@ class NIRAAuthenticator:
         )
         self.env = settings.NIRA_ENV
 
-        self.cert_path = settings.NIRA_CERT_PATH
         self.partner_key_path = settings.NIRA_PARTNER_KEY_PATH
         self.partner_cert_path = settings.NIRA_PARTNER_CERT_PATH
 
@@ -79,8 +115,6 @@ class NIRAAuthenticator:
             missing.append("NIRA_PARTNER_ID")
         if not self.partner_api_key:
             missing.append("NIRA_PARTNER_API_KEY")
-        if not self.cert_path or not os.path.exists(self.cert_path):
-            missing.append("NIRA_CERT_PATH (file not found)")
         if not self.partner_key_path or not os.path.exists(self.partner_key_path):
             missing.append("NIRA_PARTNER_KEY_PATH (file not found)")
         if not self.partner_cert_path or not os.path.exists(self.partner_cert_path):
@@ -136,13 +170,20 @@ class NIRAAuthenticator:
                 "NIRA_CERT_FAILED",
                 f"NIRA certificate request failed: HTTP {resp.status_code}",
             )
-        return resp.text
+        return _normalize_certificate_pem(resp.text)
 
     # ------------------------------------------------------------------ crypto
 
     def compute_thumbprint(self, cert_pem: str) -> str:
         """SHA-256 of the DER-encoded certificate, lowercase hex (spec section 6)."""
-        cert = load_pem_x509_certificate(cert_pem.encode("utf-8"))
+        try:
+            cert = load_pem_x509_certificate(cert_pem.encode("utf-8"))
+        except ValueError as exc:
+            raise KycServiceError(
+                502,
+                "NIRA_CERT_INVALID",
+                "UCC returned a malformed NIRA encryption certificate",
+            ) from exc
         der = cert.public_bytes(serialization.Encoding.DER)
         return hashlib.sha256(der).hexdigest().lower()
 

@@ -178,6 +178,10 @@ Verifies a subscriber against the relevant identity registry (NIRA, UNHCR, URSB,
 
 **Important:** A failure to match is **not** an HTTP error. It is HTTP 200 with `verified: false` and `reason_code: IDENTITY_REJECTED`. Branch on `data.verified` and `data.reason_code`, never on the HTTP status alone.
 
+Every response includes `X-Response-Time-Ms`, the gateway's server-side
+processing duration in milliseconds. Use curl's `time_total` separately to
+measure end-to-end latency including the network.
+
 #### Request — NATIONAL ID (NIRA)
 
 The middleware executes the full three-step NIRA flow internally (token → certificate → signed auth). You supply only identity and biometric blocks — no NIRA credentials, certificates, or cryptography are required from you.
@@ -281,7 +285,8 @@ Returns `verified: false` with `reason_code: VERIFICATION_UNAVAILABLE`. A `verif
 }
 ```
 
-**Response Header:** `X-Verification-Reference: vrf_FSMUJHVL3Z7QEMIZ`
+The response includes `X-Response-Time-Ms` for gateway processing duration.
+The `verification_reference` is in the JSON response body.
 
 #### Response — Verified (REFUGEE ID)
 
@@ -864,7 +869,8 @@ X-API-Key: your-key
   }
 }
 ```
-→ Response header: `X-Verification-Reference: vrf_FSMUJHVL3Z7QEMIZ`
+→ Response header: `X-Response-Time-Ms: <gateway duration in milliseconds>`
+→ Response body: `data.verification_reference`
 → Body: `{"verified": true, "reason_code": "IDENTITY_ACCEPTED", ...}`
 
 **Step 3 — Registration:**

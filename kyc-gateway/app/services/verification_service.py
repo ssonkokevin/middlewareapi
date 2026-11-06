@@ -189,20 +189,24 @@ async def _verify_national_id(payload: IdentityVerificationRequest) -> IdentityV
 
         block_transaction_id, block_env = _extract_block_metadata(blocks)
 
-        # Prefer block JWT transactionId over body; fall back to body
+        if (
+            block_transaction_id
+            and payload.transaction_id
+            and payload.transaction_id != block_transaction_id
+        ):
+            raise KycServiceError(
+                422,
+                "INVALID_BIOMETRIC",
+                f"transaction_id '{payload.transaction_id}' does not match block JWT "
+                f"transactionId '{block_transaction_id}'",
+            )
+
+        # Prefer block JWT transactionId over body; fall back to body.
         transaction_id = block_transaction_id or payload.transaction_id
         if not transaction_id:
             raise KycServiceError(
                 422, "MISSING_FIELD",
                 "transaction_id is required (block JWT must contain one or provide it in the body)",
-            )
-
-        # If both are present, they must match
-        if block_transaction_id and transaction_id != block_transaction_id:
-            raise KycServiceError(
-                422, "INVALID_BIOMETRIC",
-                f"transaction_id '{transaction_id}' does not match block JWT "
-                f"transactionId '{block_transaction_id}'",
             )
 
         # Validate block env against configured NIRA env (case-insensitive)
