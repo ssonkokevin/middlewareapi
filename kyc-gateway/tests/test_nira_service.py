@@ -81,8 +81,16 @@ class NIRAAuthenticatorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(_normalize_certificate_pem(certificate), expected)
         self.assertEqual(_normalize_certificate_pem(json.dumps(expected)), expected)
-        with self.assertRaisesRegex(KycServiceError, "not a PEM certificate"):
+        self.assertEqual(
+            _normalize_certificate_pem(
+                json.dumps({"response": {"certificate": expected}, "errors": None})
+            ),
+            expected,
+        )
+        with self.assertRaisesRegex(KycServiceError, "neither PEM nor Base64"):
             _normalize_certificate_pem(r"\not-a-certificate")
+        with self.assertRaisesRegex(KycServiceError, "missing response.certificate"):
+            _normalize_certificate_pem(json.dumps({"response": {}}))
 
     async def test_normalized_certificate_is_accepted_by_x509_parser(self):
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -99,6 +107,21 @@ class NIRAAuthenticatorTests(unittest.IsolatedAsyncioTestCase):
             .sign(private_key, hashes.SHA256())
             .public_bytes(serialization.Encoding.PEM)
             .decode("ascii")
+        )
+        certificate_der = x509.load_pem_x509_certificate(
+            certificate.encode("ascii")
+        ).public_bytes(serialization.Encoding.DER)
+        base64_der_response = json.dumps(
+            {
+                "response": {
+                    "certificate": base64.b64encode(certificate_der).decode("ascii")
+                },
+                "errors": None,
+            }
+        )
+        self.assertEqual(
+            _normalize_certificate_pem(base64_der_response),
+            certificate,
         )
         escaped = certificate.replace("\n", r"\n")
 

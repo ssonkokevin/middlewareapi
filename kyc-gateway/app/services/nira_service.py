@@ -27,7 +27,7 @@ import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.x509 import load_pem_x509_certificate
+from cryptography.x509 import load_der_x509_certificate, load_pem_x509_certificate
 
 from app.core.config import settings
 from app.services.exceptions import KycServiceError
@@ -45,40 +45,60 @@ def _load_file(path: str) -> str:
 
 
 def _normalize_certificate_pem(certificate: str) -> str:
-    """Normalize plain, JSON-string, and literal-escaped PEM line endings."""
+    """Extract NIRA's certificate from UCC's response and normalize it to PEM."""
     try:
         decoded = json.loads(certificate)
     except json.JSONDecodeError:
         decoded = certificate
 
-    if isinstance(decoded, str):
+    if isinstance(decoded, dict):
+        if decoded.get("status") == "error":
+            error_code = decoded.get("error_code") or "unknown UCC error"
+            raise KycServiceError(
+                502,
+                "NIRA_CERT_FAILED",
+                f"NIRA certificate request failed: {error_code}",
+            )
+        response = decoded.get("response")
+        certificate = response.get("certificate") if isinstance(response, dict) else None
+    elif isinstance(decoded, str):
         certificate = decoded
     else:
+        certificate = None
+
+    if not isinstance(certificate, str) or not certificate.strip():
         raise KycServiceError(
             502,
             "NIRA_CERT_INVALID",
-            "NIRA certificate response is not a PEM certificate",
+            "NIRA certificate response is missing response.certificate",
         )
 
     certificate = certificate.strip()
-    if "\\n" in certificate or "\\r" in certificate:
-        certificate = (
-            certificate.replace("\\r\\n", "\n")
-            .replace("\\n", "\n")
-            .replace("\\r", "\n")
-            .strip()
-        )
+    certificate = (
+        certificate.replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n")
+        .strip()
+    )
 
-    if not (
-        certificate.startswith("-----BEGIN CERTIFICATE-----")
-        and "-----END CERTIFICATE-----" in certificate
-    ):
-        raise KycServiceError(
-            502,
-            "NIRA_CERT_INVALID",
-            "NIRA certificate response is not a PEM certificate",
-        )
-    return certificate + "\n"
+    if certificate.startswith("-----BEGIN CERTIFICATE-----"):
+        if "-----END CERTIFICATE-----" in certificate:
+            return certificate + "\n"
+    else:
+        try:
+            der = base64.b64decode(certificate, validate=True)
+            certificate = load_der_x509_certificate(der).public_bytes(
+                serialization.Encoding.PEM
+            ).decode("ascii")
+            return certificate
+        except (ValueError, UnicodeDecodeError):
+            pass
+
+    raise KycServiceError(
+        502,
+        "NIRA_CERT_INVALID",
+        "NIRA response.certificate is neither PEM nor Base64-encoded DER",
+    )
 
 
 class NIRAAuthenticator:
