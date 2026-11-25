@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.main import app, _request_body_for_log, _response_headers_for_log
+from app.schemas.kyc import IdentityVerificationRequest
 
 
 class _Authenticator:
@@ -30,6 +31,38 @@ class IdentityVerificationEndpointTests(unittest.TestCase):
 
     def tearDown(self):
         settings.UCC_FORWARDING_ENABLED = self.original_forwarding
+
+    def test_refugee_input_formats_are_jpeg_or_wsq_only(self):
+        for biometric_format in ("JPEG", "WSQ"):
+            request = IdentityVerificationRequest.model_validate(
+                {
+                    "id_type": "REFUGEE ID",
+                    "id_number": "UGA-2024-0098765",
+                    "first_name": "GRACE",
+                    "last_name": "AYO",
+                    "biometric": {
+                        "biometric_type": "FINGERPRINT",
+                        "format": biometric_format,
+                        "data": "base64-image-data",
+                    },
+                }
+            )
+            self.assertEqual(request.biometric.format, biometric_format)
+
+        with self.assertRaises(ValueError):
+            IdentityVerificationRequest.model_validate(
+                {
+                    "id_type": "REFUGEE ID",
+                    "id_number": "UGA-2024-0098765",
+                    "first_name": "GRACE",
+                    "last_name": "AYO",
+                    "biometric": {
+                        "biometric_type": "FINGERPRINT",
+                        "format": "ISO_19794_4",
+                        "data": "base64-image-data",
+                    },
+                }
+            )
 
     def test_national_id_uses_one_local_endpoint_and_redacts_biometrics(self):
         authenticator = _Authenticator()

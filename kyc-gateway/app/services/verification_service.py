@@ -27,7 +27,7 @@ from app.core.config import settings
 from app.schemas.kyc import (
     IdentityVerificationData,
     IdentityVerificationRequest,
-    IsoImageBiometric,
+    FingerprintImageBiometric,
 )
 from app.services.biometric_converter import convert_biometric_if_wsq
 from app.services.db import store
@@ -65,10 +65,10 @@ def _validate_biometric_shape(payload: IdentityVerificationRequest) -> None:
                 422, "INVALID_BIOMETRIC", "NATIONAL ID requires format MOSIP_SBI_SIGNED"
             )
     elif payload.id_type == "REFUGEE ID":
-        if payload.biometric.format not in ("ISO_19794_4", "ISO_19794_6", "JPEG", "WSQ"):
+        if payload.biometric.format not in ("JPEG", "WSQ"):
             raise KycServiceError(
                 422, "INVALID_BIOMETRIC",
-                "REFUGEE ID requires format ISO_19794_4, ISO_19794_6, JPEG, or WSQ"
+                "REFUGEE ID requires format JPEG or WSQ"
             )
 
 
@@ -125,7 +125,7 @@ async def verify_identity(payload: IdentityVerificationRequest) -> IdentityVerif
     biometric = payload.biometric
     if biometric is not None and biometric.format == "WSQ":
         converted = convert_biometric_if_wsq(biometric.model_dump())
-        payload.biometric = IsoImageBiometric(
+        payload.biometric = FingerprintImageBiometric(
             biometric_type=converted["biometric_type"],
             format=converted["format"],
             data=converted["data"],

@@ -30,8 +30,9 @@ info:
         They carry `verification_reference` instead.
       - `eligibility_token` is removed, along with its two reason codes.
       - `id_type` is reduced from seven values to three.
-      - Biometric payloads are now provider-specific: a signed MOSIP SBI block
-        for NIRA, an ISO/IEC 19794-4 image record for all other registries.
+      - Biometric payloads are provider-specific: a signed MOSIP SBI block
+        for NIRA and JPEG fingerprint images for Refugee ID. The gateway also
+        accepts WSQ for Refugee ID and converts it to JPEG.
 
     ----------------------------------------------------------------------
     AUTHENTICATION
@@ -90,7 +91,7 @@ info:
       id_type           provider   status    biometric format
       ----------------  ---------  --------  --------------------------------------
       NATIONAL ID       NIRA       live      MOSIP_SBI_SIGNED (device-signed block)
-      REFUGEE ID        UNHCR      live      ISO_19794_4 (finger image record)
+      REFUGEE ID        UNHCR      simulated JPEG fingerprint (WSQ is converted by gateway)
       PASSPORT          NCIC       planned   not yet applicable
       COI               URSB       planned   none — an organisation has no biometric
       REGISTRY_PENDING  undecided  planned   none — an organisation has no biometric
@@ -108,11 +109,15 @@ info:
         - the block's signed transactionId must equal the `transaction_id` sent
           in the request
 
-    UNHCR and future providers — ISO_19794_4
-      Send a full ISO/IEC 19794-4 finger IMAGE record, Base64 encoded, in
-      `biometric.data`. Note this is an image record and NOT an ISO/IEC 19794-2
-      minutiae template. Do not send extracted minutiae, and do not send a bare
-      JPEG or PNG file.
+    REFUGEE ID — JPEG fingerprint
+      UCC revision 0.4.0 requires a Base64-encoded JPEG fingerprint image in
+      `biometric.data`. The gateway accepts `format: JPEG` directly or
+      `format: WSQ` and converts WSQ data to Base64 JPEG. ISO_19794_4 and
+      ISO_19794_6 are no longer accepted for this request.
+
+      The gateway's current Refugee ID provider path is simulated and does not
+      make a live UNHCR request. Do not present a simulated result as a live
+      UNHCR verification.
 
     NCIC is not yet integrated. A PASSPORT verification returns verified=false
     with reason_code VERIFICATION_UNAVAILABLE and provider_status PLANNED. A
@@ -523,14 +528,27 @@ paths:
                         sessionKey: kR9dP...
                         thumbprint: 3f5a9c...
               refugee_id_unhcr:
-                summary: Refugee ID — ISO 19794-4 finger image sent to UNHCR
+                summary: Refugee ID — JPEG fingerprint image
                 value:
                   id_type: REFUGEE ID
                   id_number: UGA-2024-0098765
+                  first_name: GRACE
+                  last_name: AYO
                   biometric:
                     biometric_type: FINGERPRINT
-                    format: ISO_19794_4
-                    data: Uk9OQVBJU08xOTc5NDQAAAAA...
+                    format: JPEG
+                    data: <base64-jpeg-fingerprint-image>
+              refugee_id_wsq:
+                summary: Refugee ID — WSQ input converted to JPEG by the gateway
+                value:
+                  id_type: REFUGEE ID
+                  id_number: UGA-2024-0098765
+                  first_name: GRACE
+                  last_name: AYO
+                  biometric:
+                    biometric_type: FINGERPRINT
+                    format: WSQ
+                    data: <base64-wsq-fingerprint-image>
               passport_ncic:
                 summary: Passport — NCIC not yet integrated, biometric omitted
                 value:
@@ -2177,30 +2195,28 @@ components:
           - MOSIP_SBI_SIGNED — the block produced and signed by a MOSIP-certified
             SBI capture device. Required for NATIONAL ID (NIRA). UCC relays it
             unmodified and does not parse, validate or reshape it.
-          - ISO_19794_4 / ISO_19794_6 — an ISO biometric IMAGE record produced by
-            the operator capture SDK. Used for UNHCR and any future provider that
-            accepts ISO records.
+          - JPEG — a Base64-encoded fingerprint image required by UCC v0.4.0
+            for REFUGEE ID.
+          - WSQ — Base64-encoded Refugee ID fingerprint input converted to JPEG
+            by the gateway before provider handling.
 
         Biometric data is processed transiently and is never persisted.
       oneOf:
-        - $ref: "#/components/schemas/IsoImageBiometric"
+        - $ref: "#/components/schemas/FingerprintImageBiometric"
         - $ref: "#/components/schemas/SignedBlockBiometric"
       discriminator:
         propertyName: format
         mapping:
-          ISO_19794_4: "#/components/schemas/IsoImageBiometric"
-          ISO_19794_6: "#/components/schemas/IsoImageBiometric"
+          JPEG: "#/components/schemas/FingerprintImageBiometric"
+          WSQ: "#/components/schemas/FingerprintImageBiometric"
           MOSIP_SBI_SIGNED: "#/components/schemas/SignedBlockBiometric"
 
-    IsoImageBiometric:
+    FingerprintImageBiometric:
       type: object
       description: |
-        An ISO biometric IMAGE record, Base64 encoded.
-
-        This is an image record, NOT a minutiae template. ISO/IEC 19794-4 defines
-        finger image data; ISO/IEC 19794-6 defines iris image data. Send the full
-        ISO record produced by the capture SDK. Do not send extracted minutiae,
-        and do not send a bare JPEG or PNG file.
+        Refugee ID fingerprint input. `JPEG` is passed as a Base64-encoded
+        fingerprint image. `WSQ` input is decoded and re-encoded as Base64 JPEG
+        by the gateway. Other formats are not supported.
       required:
         - biometric_type
         - format
@@ -2208,26 +2224,23 @@ components:
       properties:
         biometric_type:
           type: string
-          description: Biometric modality.
+          description: Refugee ID uses fingerprint images.
           enum:
             - FINGERPRINT
-            - IRIS
           example: FINGERPRINT
         format:
           type: string
-          description: |
-            Must agree with biometric_type. Use ISO_19794_4 with FINGERPRINT and
-            ISO_19794_6 with IRIS.
+          description: JPEG is required by UCC; WSQ is accepted and converted by the gateway.
           enum:
-            - ISO_19794_4
-            - ISO_19794_6
-          example: ISO_19794_4
+            - JPEG
+            - WSQ
+          example: JPEG
         data:
           type: string
           description: |
-            Base64-encoded ISO biometric image record. Processed transiently and
-            never persisted.
-          example: Uk9OQVBJU08xOTc5NDQAAAAA...
+            Base64-encoded JPEG or WSQ fingerprint image. Processed transiently
+            and never persisted.
+          example: /9j/4AAQSkZJRgABAQAAAQ...
 
     SignedBlockBiometric:
       type: object

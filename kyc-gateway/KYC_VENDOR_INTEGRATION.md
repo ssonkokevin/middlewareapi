@@ -9,19 +9,19 @@
 
 ## 1. Overview
 
-The KYC Verification API enables Mobile Network Operators (MNOs) and vendors to submit SIM registration information for validation and compliance. The gateway acts as a secure reverse proxy between your application and UCC:
+The KYC Verification API enables Mobile Network Operators (MNOs) and vendors to submit SIM registration information for validation and compliance. The gateway is the vendor-facing integration point:
 
 - You connect only to `http://10.33.33.30:8001`
 - The gateway validates your API key locally
-- The gateway injects all provider credentials (NIRA partner keys, certificates, signing logic) internally
-- Requests are forwarded to UCC; responses are returned to you unchanged
+- For National ID verification, the gateway performs the NIRA token, certificate, and AUTH steps internally
+- Other registration and ownership operations are routed by the gateway; vendors do not connect directly to UCC
 
-> **Important:** You must NOT connect directly to `192.168.5.18`. Only use `http://10.33.33.30:8001`. The UCC upstream address is internal.
+> **Important:** Use only the vendor-facing gateway at `http://10.33.33.30:8001`.
 
 ### Network Flow
 
 ```
-Vendor Application → http://10.33.33.30:8001 (KYC Gateway) → UCC (https://192.168.5.18:443)
+Vendor Application → http://10.33.33.30:8001 (KYC Gateway)
 ```
 
 ---
@@ -50,7 +50,7 @@ The `id_type` field selects the authority that verifies the subscriber. Each pro
 | ID Type | Provider | Status | Biometric Format | Freshness Window |
 |---|---|---|---|---|
 | `NATIONAL ID` | NIRA | Live | `MOSIP_SBI_SIGNED` (device-signed block) | ~30 seconds |
-| `REFUGEE ID` | UNHCR | Live | `WSQ` or `JPEG` (fingerprint image) | Not time-critical |
+| `REFUGEE ID` | UNHCR | Simulated in current gateway | `JPEG` (required by UCC); `WSQ` is converted to JPEG | Not time-critical |
 | `PASSPORT` | NCIC | Planned | Not applicable | N/A |
 | `COI` | URSB | Planned | None (organisation has no biometric) | N/A |
 | `REGISTRY_PENDING` | Undecided | Planned | None | N/A |
@@ -65,7 +65,9 @@ Two constraints:
 
 ### REFUGEE ID — UNHCR
 
-Send a fingerprint image record in `biometric.data`, Base64 encoded. Accepted formats: `WSQ`, `JPEG`, `ISO_19794_4`, `ISO_19794_6`. If you send `WSQ`, the gateway automatically converts it to JPEG before forwarding to UCC — no client-side change is required.
+UCC revision 0.4.0 requires a Base64-encoded JPEG fingerprint image in `biometric.data`. Send `format: "JPEG"` for JPEG input. If your capture device supplies WSQ, send `format: "WSQ"` with Base64 WSQ data; the gateway conversion helper converts WSQ to JPEG. ISO 19794 formats and other formats are not supported.
+
+**Current integration status:** the gateway currently uses a simulated Refugee ID provider path and does not make a live UNHCR request. The conversion helper exists, but do not describe the resulting response as a live UNHCR verification.
 
 ### Important Biometric Handling Rules
 
@@ -235,7 +237,7 @@ The middleware executes the full three-step NIRA flow internally (token → cert
 | `last_name` | string | Yes | Last name (e.g., `LADU`) |
 | `biometric` | object | Yes | Fingerprint image object |
 | `biometric.biometric_type` | string | Yes | `"FINGERPRINT"` |
-| `biometric.format` | string | Yes | `"WSQ"`, `"JPEG"`, `"ISO_19794_4"`, or `"ISO_19794_6"` |
+| `biometric.format` | string | Yes | `"JPEG"` or `"WSQ"` (`WSQ` is converted to JPEG) |
 | `biometric.data` | string | Yes | Base64-encoded fingerprint image data |
 
 #### Request Example — REFUGEE ID (WSQ)
@@ -930,34 +932,7 @@ X-API-Key: your-key
 
 ---
 
-## 8. What the Middleware Handles Internally (Not Your Concern)
-
-The following are **middleware operator secrets** and are never shared with vendors:
-
-| Item | Description |
-|---|---|
-| NIRA partner private key & certificate | Used for JWS signing of `/nira/auth` |
-| NIRA encryption certificate | Used for thumbprint + session key encryption |
-| NIRA client ID, secret key, app ID | NIRA partner credentials |
-| NIRA MISP license key, partner ID, partner API key | NIRA auth headers |
-| Client-side cryptography | RSA-OAEP, AES-GCM, JWS RS256 implementation |
-| UCC upstream URL | Internal routing (`https://192.168.5.18`) |
-
-Your integration surface is limited to the endpoints documented above with your `X-API-Key`.
-
----
-
-## 9. Go-Live Checklist
-
-- [ ] Confirm your server can reach `10.33.33.30:8001` (you do not need direct access to `192.168.5.18`)
-- [ ] Obtain a unique `X-API-Key` from the middleware operator via a secure channel
-- [ ] Review the OpenAPI contract at `http://10.33.33.30:8001/openapi.json`
-- [ ] For NATIONAL ID: capture a fresh MOSIP SBI biometric block and send it within ~30 seconds of the auth call
-- [ ] Use HTTPS via a trusted reverse proxy before using this connection outside a controlled private network
-
----
-
-## 10. Interactive Documentation
+## 8. Interactive Documentation
 
 When the gateway is running, interactive Swagger UI documentation is available at:
 
