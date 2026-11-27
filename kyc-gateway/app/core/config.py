@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     NIRA_ENV: str = "pre-production"
     NIRA_DOMAIN_URI: str = ""
 
+    # ------------------------------------------------------------- NIRA Legacy TPI
+    # Credentials for the helper endpoint that auto-generates WS-Security
+    NIRA_TPI_USERNAME: str = ""
+    NIRA_TPI_PASSWORD: str = ""
+
     # -------------------------------------------------------- Upstream (TBD)
     # No production or test URL has been confirmed yet for any provider.
     # Leave blank until UCC/NIRA/UNHCR/NCIC/URSB provide real base URL(s).
