@@ -4,14 +4,14 @@ Detailed structured logging for the KYC Verification API gateway.
 Logs in format similar to:
 2026-10-25 08:44:25.248 +03:00 [INF] HTTP POST /path responded 200 in 146.9364 ms
 
-Captures detailed request/response information for API calls.
-Also writes daily date-stamped log files to /app/logs/kyc-gateway-YYYYMMDD.txt
-which can be tailed or viewed with less/cat.
+Writes daily date-stamped log files to /app/logs/kyc-gateway-YYYYMMDD.txt
+which can be tailed or viewed with less/cat. Rotates at midnight and keeps
+the last 30 days.
 """
 
+import glob
 import json
 import logging
-import logging.handlers
 import os
 import sys
 from datetime import datetime, timezone, timedelta
@@ -36,11 +36,8 @@ class DetailedFormatter(logging.Formatter):
         now = datetime.now(_EAT)
         timestamp = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + " +03:00"
         level = self.LEVEL_MAP.get(record.levelname, record.levelname[:3].upper())
-
-        # If message is already formatted in our custom style, use it as-is
         msg = record.getMessage()
 
-        # For extra detailed logs, check if it's a structured log
         if hasattr(record, 'detailed') and record.detailed:
             return f"{timestamp} [{level}] {msg}"
 
@@ -57,7 +54,6 @@ class JsonFormatter(logging.Formatter):
             "function": record.funcName,
             "line": record.lineno,
         }
-        # Include any extra fields attached via `extra={...}`
         reserved = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys())
         for key, value in record.__dict__.items():
             if key not in reserved and key not in payload and not key.startswith('_'):
@@ -65,6 +61,54 @@ class JsonFormatter(logging.Formatter):
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, default=str)
+
+
+class DateStampedFileHandler(logging.FileHandler):
+    """
+    FileHandler that writes to a date-stamped filename (kyc-gateway-YYYYMMDD.txt)
+    and rotates automatically at midnight. Keeps the last backup_count days.
+    """
+
+    def __init__(self, logs_dir: str, prefix: str = "kyc-gateway",
+                 suffix: str = ".txt", encoding: str = "utf-8",
+                 backup_count: int = 30):
+        self._logs_dir = logs_dir
+        self._prefix = prefix
+        self._suffix = suffix
+        self._encoding = encoding
+        self._backup_count = backup_count
+        self._current_date = self._today()
+        filename = self._filename_for(self._current_date)
+        super().__init__(filename, encoding=encoding)
+
+    def _today(self) -> str:
+        return datetime.now(_EAT).strftime("%Y%m%d")
+
+    def _filename_for(self, date_str: str) -> str:
+        return os.path.join(self._logs_dir, f"{self._prefix}-{date_str}{self._suffix}")
+
+    def _rotate(self) -> None:
+        today = self._today()
+        if today != self._current_date:
+            self.close()
+            self._current_date = today
+            self.baseFilename = self._filename_for(today)
+            self._open()
+            self._cleanup()
+
+    def _cleanup(self) -> None:
+        pattern = os.path.join(self._logs_dir, f"{self._prefix}-*{self._suffix}")
+        files = sorted(glob.glob(pattern))
+        if len(files) > self._backup_count:
+            for f in files[:-self._backup_count]:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._rotate()
+        super().emit(record)
 
 
 def setup_logging(level: int = logging.INFO, use_json: bool = False) -> None:
@@ -80,18 +124,16 @@ def setup_logging(level: int = logging.INFO, use_json: bool = False) -> None:
         console_handler.setFormatter(DetailedFormatter())
     root.addHandler(console_handler)
 
-    # --- Daily rotating file handler ---
+    # --- Daily date-stamped file handler ---
     # Writes to /app/logs/kyc-gateway-YYYYMMDD.txt, rotates at midnight,
-    # keeps last 30 days.
-    log_file_path = os.path.join(_LOGS_DIR, "kyc-gateway-%Y%m%d.txt")
-    file_handler = logging.handlers.TimedRotatingFileHandler(
-        filename=log_file_path,
-        when="midnight",
-        interval=1,
-        backupCount=30,
+    # keeps last 30 days. Can be tailed in real time: tail -f kyc-gateway-YYYYMMDD.txt
+    file_handler = DateStampedFileHandler(
+        logs_dir=_LOGS_DIR,
+        prefix="kyc-gateway",
+        suffix=".txt",
         encoding="utf-8",
+        backup_count=30,
     )
-    file_handler.suffix = "%Y%m%d.txt"
     if use_json:
         file_handler.setFormatter(JsonFormatter())
     else:
