@@ -241,6 +241,10 @@ async def forward_ucc_requests(request: Request, call_next):
     the outbound call to UCC_BASE_URL while preserving the vendor's
     X-API-Key, content type, request body, query string, and idempotency key.
     """
+    # Skip helper endpoint - handled locally in route
+    if request.url.path == "/nira/legacy/helper":
+        return await call_next(request)
+
     if not settings.UCC_FORWARDING_ENABLED or not _is_ucc_proxy_path(request.url.path):
         return await call_next(request)
 
