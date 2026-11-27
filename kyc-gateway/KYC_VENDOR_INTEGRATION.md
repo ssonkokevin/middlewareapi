@@ -834,6 +834,185 @@ Health check (no authentication required).
 
 ---
 
+### 5.12 POST /nira/legacy
+
+Call NIRA's legacy Third Party Interface (TPI) service through UCC for **OLD National ID cards** (9-digit card number). This endpoint uses SOAP 1.1 with WS-Security UsernameToken (PasswordDigest). No biometric is sent — this is a card-data check only. On successful match with a Valid card, UCC returns `X-Verification-Reference`.
+
+#### Request
+
+| Header | Required | Description |
+|---|---|---|
+| `X-API-Key` | Yes | Your vendor API key |
+| `Content-Type` | Yes | `text/xml; charset=utf-8` |
+| `SOAPAction` | Optional | SOAPAction as specified by NIRA TPI client (e.g., `""`) |
+
+**Request Body:** SOAP 1.1 envelope containing either `verifyPersonInformation` or `changePassword` operation.
+
+**Required fields for `verifyPersonInformation` (each exactly once, plain text):**
+- `nationalId` — NIN: 14 capital letters and digits
+- `documentId` — Card number: **9 digits** (older card only)
+- `surname` — As on the card
+- `givenNames` — Every given name, as on the card
+- `dateOfBirth` — DD/MM/YYYY, as on the card
+- `otherNames` — Optional, when the card carries other names
+
+#### Request Example — verifyPersonInformation
+
+```xml
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:fac="http://facade.server.pilatus.thirdparty.tidis.muehlbauer.de/"
+                  xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+  <soapenv:Header>
+    <wsse:UsernameToken>
+      <wsse:Username>Operator@ROOT</wsse:Username>
+      <wsse:Password Type="PasswordDigest">YOUR-PASSWORD-DIGEST</wsse:Password>
+      <wsse:Nonce>YOUR-NONCE</wsse:Nonce>
+      <wsse:Created>2026-11-11T10:00:00.000+03:00</wsse:Created>
+    </wsse:UsernameToken>
+  </soapenv:Header>
+  <soapenv:Body>
+    <fac:verifyPersonInformation>
+      <request>
+        <dateOfBirth>01/01/1990</dateOfBirth>
+        <documentId>000000001</documentId>
+        <givenNames>JANE</givenNames>
+        <nationalId>CF900000000ABC</nationalId>
+        <otherNames></otherNames>
+        <surname>DEMO</surname>
+      </request>
+    </fac:verifyPersonInformation>
+  </soapenv:Body>
+</soapenv:Envelope>
+```
+
+#### Request Example — changePassword
+
+```xml
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:fac="http://facade.server.pilatus.thirdparty.tidis.muehlbauer.de/"
+                  xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+  <soapenv:Header>
+    <wsse:UsernameToken>
+      <wsse:Username>Operator@ROOT</wsse:Username>
+      <wsse:Password Type="PasswordDigest">YOUR-PASSWORD-DIGEST</wsse:Password>
+      <wsse:Nonce>YOUR-NONCE</wsse:Nonce>
+      <wsse:Created>2026-11-11T10:00:00.000+03:00</wsse:Created>
+    </wsse:UsernameToken>
+  </soapenv:Header>
+  <soapenv:Body>
+    <fac:changePassword>
+      <request>
+        <newPassword>YOUR-NEW-PASSWORD-ENCRYPTED-TO-NIRAS-PUBLIC-KEY</newPassword>
+      </request>
+    </fac:changePassword>
+  </soapenv:Body>
+</soapenv:Envelope>
+```
+
+#### Response — Successful Verification (Card Matched, Valid)
+
+**Response Header:** `X-Verification-Reference: vrf_...`
+
+```xml
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <ns2:verifyPersonInformationResponse xmlns:ns2="http://facade.server.pilatus.thirdparty.tidis.muehlbauer.de/">
+      <return>
+        <transactionStatus>
+          <transactionStatus>Ok</transactionStatus>
+          <passwordDaysLeft>99</passwordDaysLeft>
+          <executionCost>0.0</executionCost>
+        </transactionStatus>
+        <matchingStatus>true</matchingStatus>
+        <cardStatus>Valid</cardStatus>
+      </return>
+    </ns2:verifyPersonInformationResponse>
+  </soap:Body>
+</soap:Envelope>
+```
+
+#### Response — Card Data Did Not Match
+
+```xml
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <ns2:verifyPersonInformationResponse xmlns:ns2="http://facade.server.pilatus.thirdparty.tidis.muehlbauer.de/">
+      <return>
+        <transactionStatus>
+          <transactionStatus>Ok</transactionStatus>
+          <passwordDaysLeft>99</passwordDaysLeft>
+          <executionCost>0.0</executionCost>
+        </transactionStatus>
+        <matchingStatus>false</matchingStatus>
+        <cardStatus>Valid</cardStatus>
+      </return>
+    </ns2:verifyPersonInformationResponse>
+  </soap:Body>
+</soap:Envelope>
+```
+
+#### Response — NIRA Could Not Process (Person Not Found)
+
+```xml
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <ns2:verifyPersonInformationResponse xmlns:ns2="http://facade.server.pilatus.thirdparty.tidis.muehlbauer.de/">
+      <return>
+        <transactionStatus>
+          <transactionStatus>Error</transactionStatus>
+          <passwordDaysLeft>56</passwordDaysLeft>
+          <error>
+            <code>320</code>
+            <message>Person not found, NIN: CF900000000ABC</message>
+          </error>
+        </transactionStatus>
+      </return>
+    </ns2:verifyPersonInformationResponse>
+  </soap:Body>
+</soap:Envelope>
+```
+
+#### Response — Password Changed
+
+```xml
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <ns2:changePasswordResponse xmlns:ns2="http://facade.server.pilatus.thirdparty.tidis.muehlbauer.de/">
+      <return>
+        <transactionStatus>
+          <transactionStatus>Ok</transactionStatus>
+          <passwordDaysLeft>178</passwordDaysLeft>
+          <executionCost>0.0</executionCost>
+        </transactionStatus>
+      </return>
+    </ns2:changePasswordResponse>
+  </soap:Body>
+</soap:Envelope>
+```
+
+#### Error Responses (UCC Validation Errors — JSON)
+
+| HTTP Status | Error Code | Message | Scenario |
+|---|---|---|---|
+| `422` | `INVALID_PAYLOAD` | `Request body is not a SOAP envelope` | Body empty, not XML, or has DOCTYPE |
+| `422` | `INVALID_PAYLOAD` | `Request body is too large` | SOAP envelope exceeds 64 KB |
+| `422` | `INVALID_PAYLOAD` | `SOAP body must hold exactly one operation` | No operation or multiple operations |
+| `422` | `INVALID_FIELD` | `Only verifyPersonInformation and changePassword are relayed` | Unsupported operation |
+| `422` | `MISSING_FIELD` | `nationalId is required` | Missing nationalId |
+| `422` | `INVALID_FIELD` | `nationalId must be 14 capital letters and digits` | Invalid NIN format |
+| `422` | `MISSING_FIELD` | `surname is required` | Missing required field |
+| `422` | `INVALID_FIELD` | `documentId must be the 9-digit number of an older national ID card; verify newer cards with POST /nira/auth` | documentId not 9 digits |
+
+#### Usage Notes
+
+- **Only older cards** (9-digit `documentId`) can be verified here. Newer cards use `POST /nira/auth` with biometric.
+- The `X-Verification-Reference` header is returned **only** for `verifyPersonInformation` when NIRA returns HTTP 200 with `transactionStatus Ok`, `matchingStatus true`, and `cardStatus Valid`.
+- Use the returned `verification_reference` when registering with `id_type: "NATIONAL ID"` and the same NIN as `id_number`.
+- The reference is valid for 24 hours and can be used for one successful registration.
+- Your TPI account credentials (username, password) are used in the WS-Security UsernameToken — keep them secure.
+
+---
+
 ## 6. Complete Workflow Examples
 
 ### Example A: NATIONAL ID Registration
@@ -924,34 +1103,7 @@ X-API-Key: your-key
 
 ---
 
-## 8. What the Middleware Handles Internally (Not Your Concern)
-
-The following are **middleware operator secrets** and are never shared with vendors:
-
-| Item | Description |
-|---|---|
-| NIRA partner private key & certificate | Used for JWS signing of `/nira/auth` |
-| NIRA encryption certificate | Used for thumbprint + session key encryption |
-| NIRA client ID, secret key, app ID | NIRA partner credentials |
-| NIRA MISP license key, partner ID, partner API key | NIRA auth headers |
-| Client-side cryptography | RSA-OAEP, AES-GCM, JWS RS256 implementation |
-| UCC upstream URL | Internal routing (`https://192.168.5.18`) |
-
-Your integration surface is limited to the endpoints documented above with your `X-API-Key`.
-
----
-
-## 9. Go-Live Checklist
-
-- [ ] Confirm your server can reach `10.33.33.30:8001` (you do not need direct access to `192.168.5.18`)
-- [ ] Obtain a unique `X-API-Key` from the middleware operator via a secure channel
-- [ ] Review the OpenAPI contract at `http://10.33.33.30:8001/openapi.json`
-- [ ] For NATIONAL ID: capture a fresh MOSIP SBI biometric block and send it within ~30 seconds of the auth call
-- [ ] Use HTTPS via a trusted reverse proxy before using this connection outside a controlled private network
-
----
-
-## 10. Interactive Documentation
+## 8. Interactive Documentation
 
 When the gateway is running, interactive Swagger UI documentation is available at:
 

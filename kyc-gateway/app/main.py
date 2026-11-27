@@ -49,7 +49,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.logger import setup_logging
-from app.api.routes import ownership, verification, registration, compliance
+from app.api.routes import ownership, verification, registration, compliance, nira
 from app.services.biometric_converter import convert_biometric_if_wsq
 
 _EAT = timezone(timedelta(hours=3))
@@ -66,6 +66,7 @@ _UCC_PROXY_PATHS = (
     "/nira/token",
     "/nira/certificate",
     "/nira/auth",
+    "/nira/legacy",
 )
 
 
@@ -383,6 +384,7 @@ app.include_router(ownership.router)
 app.include_router(verification.router)
 app.include_router(registration.router)
 app.include_router(compliance.router)
+app.include_router(nira.router)
 
 
 @app.get("/", include_in_schema=False)

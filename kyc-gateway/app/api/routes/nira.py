@@ -1,8 +1,13 @@
-"""NIRA MOSIP authentication operations relayed through the UCC gateway."""
+"""NIRA authentication operations relayed through the UCC gateway.
+
+Includes:
+- Three-step NIRA AUTH flow for NEW National ID (token → certificate → auth)
+- Legacy NIRA TPI for OLD National ID cards (9-digit card number, card data only, no biometric)
+"""
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response, status
 
 from app.api.deps.auth import require_api_key
 from app.core.config import settings
@@ -161,3 +166,48 @@ async def authenticate_nira_identity(
     ),
 ) -> None:
     _require_ucc_forwarding()
+
+
+@router.post(
+    "/legacy",
+    summary="Call NIRA's legacy TPI service through UCC (OLD National ID cards)",
+    description=(
+        "Verifies holders of older national ID cards (9-digit card number) or changes "
+        "the NIRA TPI account password. Uses SOAP 1.1 with WS-Security UsernameToken "
+        "(PasswordDigest). No biometric is sent — this is a card-data check only. "
+        "On successful match with a Valid card, UCC returns X-Verification-Reference."
+    ),
+    responses={
+        200: {
+            "description": (
+                "NIRA SOAP response relayed unchanged. A successful verification "
+                "also returns X-Verification-Reference header."
+            ),
+            "headers": {
+                "X-Verification-Reference": {
+                    "description": "UCC reference for successful legacy National ID verification.",
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+        401: {"description": "Missing or invalid UCC API key."},
+        403: {"description": "UCC API key is not linked to an operator."},
+        422: {"description": "Invalid SOAP envelope, missing fields, or documentId not 9 digits."},
+        429: {"description": "Rate limit exceeded."},
+        502: {"description": "UCC could not reach NIRA legacy service."},
+        503: {"description": "UCC forwarding is disabled."},
+    },
+)
+async def call_nira_legacy(
+    request: Request,
+    _api_key: str = Depends(require_api_key),
+    soap_action: str = Header(
+        default="",
+        alias="SOAPAction",
+        description="SOAPAction header as specified by NIRA TPI client.",
+    ),
+) -> Response:
+    _require_ucc_forwarding()
+    # This endpoint is handled by the UCC forwarding middleware in main.py
+    # The middleware forwards the raw SOAP body to UCC and returns the response
+    pass
