@@ -11,6 +11,7 @@ from typing import Any
 import base64
 import hashlib
 import secrets
+import logging
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -19,6 +20,8 @@ from pydantic import BaseModel, Field
 
 from app.api.deps.auth import require_api_key
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/nira", tags=["NIRA"])
 
@@ -401,9 +404,17 @@ async def verify_legacy_helper(
 
     # Generate WS-Security token
     token = _generate_wsse_token(settings.NIRA_TPI_USERNAME, settings.NIRA_TPI_PASSWORD)
+    
+    # Log WS-Security token details
+    logger.info("PasswordDigest: %s", token["digest"])
+    logger.info("Nonce: %s", token["nonce"])
+    logger.info("Created: %s", token["created"])
 
     # Build SOAP envelope
     soap_body = _build_soap_envelope(token, body)
+    
+    # Log full SOAP request
+    logger.info("Verify person Request(NIRA):\n%s", soap_body)
 
     # Forward to UCC /nira/legacy
     url = f"{settings.UCC_BASE_URL.rstrip('/')}/api/v1/kyc/nira/legacy"
@@ -429,6 +440,16 @@ async def verify_legacy_helper(
 
     # Parse NIRA response
     parsed = _parse_nira_response(resp.text)
+    
+    # Log full SOAP response
+    logger.info("Verify PersonResponse(NIRA):\n%s", resp.text)
+    
+    # Log parsed fields
+    logger.info("Transaction Status%s", parsed.get("transaction_status", ""))
+    logger.info("PasswordDaysLeft%s", parsed.get("password_days_left", ""))
+    logger.info("ExecutionCost%s", parsed.get("execution_cost", ""))
+    logger.info("CardStatus%s", parsed.get("card_status", ""))
+    logger.info("MatchingStatus%s", parsed.get("matching_status", False))
 
     # Check for verification reference header
     x_vref = resp.headers.get("x-verification-reference")
