@@ -13,6 +13,7 @@ logs/
 *.db-wal
 kyc-gateway/venv/
 kyc-gateway/.env
+kyc-gateway/nira-cert.pem
 kyc-gateway/partner-key.pem
 kyc-gateway/partner-cert.pem
 kyc-gateway/*.db

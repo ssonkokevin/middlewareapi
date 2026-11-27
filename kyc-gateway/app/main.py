@@ -21,15 +21,15 @@ Routes:
   GET    /health                                        — Service health check
   GET    /docs                                          — Swagger UI
 
-NOTE: UCC forwarding is enabled for business operations. NATIONAL ID
-/identity_verification requests are handled locally and orchestrate NIRA's
-token → certificate → AUTH flow. Other forwarded requests authenticate to UCC
-with UCC_API_KEY, after the vendor's key is validated locally.
+NOTE: UCC forwarding is enabled for all business operations including
+/identity_verification. UCC returns the verification_reference in its
+response; the middleware does not generate references locally. UCC calls the
+/nira/* proxy endpoints (token → certificate → auth) through the middleware
+for NATIONAL ID crypto, which the middleware executes using its own NIRA
+credentials — GDE never sees them.
 
 Direct `/nira/*` proxy calls preserve the NIRA Authorization response header.
-The integrated `/identity_verification` flow returns its locally stored
-verification reference in the response body. CORS exposes the direct proxy
-headers to browser-based clients.
+CORS exposes the direct proxy headers to browser-based clients.
 
 Every endpoint requires an API key in the `X-API-Key` header (see
 app/api/deps/auth.py).
@@ -60,6 +60,7 @@ logger = logging.getLogger("kyc_gateway")
 
 _UCC_PROXY_PATHS = (
     "/ownership_check",
+    "/identity_verification",
     "/individual_registrations",
     "/corporate_registrations",
     "/compliance_report",
@@ -143,13 +144,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     # Expose direct NIRA proxy headers to browser-based clients.
-    expose_headers=["Authorization", "X-Verification-Reference"],
+    expose_headers=[
+        "Authorization",
+        "X-Verification-Reference",
+        "X-Response-Time-Ms",
+    ],
 )
 
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    start_time = time.time()
+    start_time = time.perf_counter()
     
     # Get client info
     client_ip = request.headers.get(
@@ -190,14 +195,15 @@ async def log_requests(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as e:
-        duration_ms = (time.time() - start_time) * 1000
+        duration_ms = (time.perf_counter() - start_time) * 1000
         logger.error(
             f"HTTP {method} {path} | User={user_info} IP={client_ip} | Duration={duration_ms:.0f}ms | Exception: {str(e)}",
             extra={"detailed": True},
         )
         raise
     
-    duration_ms = (time.time() - start_time) * 1000
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    response.headers["X-Response-Time-Ms"] = f"{duration_ms:.3f}"
     
     # Log response
     if response.status_code >= 400:

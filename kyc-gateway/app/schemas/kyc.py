@@ -112,12 +112,11 @@ class OwnershipCheckResponse(BaseModel):
 # Appears ONLY on IdentityVerificationRequest — never on a registration
 # endpoint. `format` discriminates the two provider-specific shapes.
 
-class IsoImageBiometric(BaseModel):
-    """UNHCR (and future ISO-based providers). A base64 image record, NOT a
-    minutiae template — ISO_19794_4 for fingerprint, ISO_19794_6 for iris."""
+class FingerprintImageBiometric(BaseModel):
+    """Refugee fingerprint image supplied as JPEG or WSQ; WSQ is converted to JPEG."""
 
-    biometric_type: Literal["FINGERPRINT", "IRIS"] = Field(..., example="FINGERPRINT")
-    format: Literal["ISO_19794_4", "ISO_19794_6", "JPEG", "WSQ"] = Field(..., example="ISO_19794_4")
+    biometric_type: Literal["FINGERPRINT"] = Field(..., example="FINGERPRINT")
+    format: Literal["JPEG", "WSQ"] = Field(..., example="JPEG")
     data: str = Field(..., example="Uk9OQVBJU08xOTc5NDQAAAAA...")
 
 
@@ -131,7 +130,7 @@ class SignedBlockBiometric(BaseModel):
 
 
 BiometricData = Annotated[
-    Union[IsoImageBiometric, SignedBlockBiometric], Field(discriminator="format")
+    Union[FingerprintImageBiometric, SignedBlockBiometric], Field(discriminator="format")
 ]
 
 

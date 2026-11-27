@@ -9,19 +9,19 @@
 
 ## 1. Overview
 
-The KYC Verification API enables Mobile Network Operators (MNOs) and vendors to submit SIM registration information for validation and compliance. The gateway acts as a secure reverse proxy between your application and UCC:
+The KYC Verification API enables Mobile Network Operators (MNOs) and vendors to submit SIM registration information for validation and compliance. The gateway is the vendor-facing integration point:
 
 - You connect only to `http://10.33.33.30:8001`
 - The gateway validates your API key locally
-- The gateway injects all provider credentials (NIRA partner keys, certificates, signing logic) internally
-- Requests are forwarded to UCC; responses are returned to you unchanged
+- For National ID verification, the gateway performs the NIRA token, certificate, and AUTH steps internally
+- Other registration and ownership operations are routed by the gateway; vendors do not connect directly to UCC
 
-> **Important:** You must NOT connect directly to `192.168.5.18`. Only use `http://10.33.33.30:8001`. The UCC upstream address is internal.
+> **Important:** Use only the vendor-facing gateway at `http://10.33.33.30:8001`.
 
 ### Network Flow
 
 ```
-Vendor Application → http://10.33.33.30:8001 (KYC Gateway) → UCC (https://192.168.5.18:443)
+Vendor Application → http://10.33.33.30:8001 (KYC Gateway)
 ```
 
 ---
@@ -50,7 +50,7 @@ The `id_type` field selects the authority that verifies the subscriber. Each pro
 | ID Type | Provider | Status | Biometric Format | Freshness Window |
 |---|---|---|---|---|
 | `NATIONAL ID` | NIRA | Live | `MOSIP_SBI_SIGNED` (device-signed block) | ~30 seconds |
-| `REFUGEE ID` | UNHCR | Live | `WSQ` or `JPEG` (fingerprint image) | Not time-critical |
+| `REFUGEE ID` | UNHCR | Simulated in current gateway | `JPEG` (required by UCC); `WSQ` is converted to JPEG | Not time-critical |
 | `PASSPORT` | NCIC | Planned | Not applicable | N/A |
 | `COI` | URSB | Planned | None (organisation has no biometric) | N/A |
 | `REGISTRY_PENDING` | Undecided | Planned | None | N/A |
@@ -65,7 +65,9 @@ Two constraints:
 
 ### REFUGEE ID — UNHCR
 
-Send a fingerprint image record in `biometric.data`, Base64 encoded. Accepted formats: `WSQ`, `JPEG`, `ISO_19794_4`, `ISO_19794_6`. If you send `WSQ`, the gateway automatically converts it to JPEG before forwarding to UCC — no client-side change is required.
+UCC revision 0.4.0 requires a Base64-encoded JPEG fingerprint image in `biometric.data`. Send `format: "JPEG"` for JPEG input. If your capture device supplies WSQ, send `format: "WSQ"` with Base64 WSQ data; the gateway conversion helper converts WSQ to JPEG. ISO 19794 formats and other formats are not supported.
+
+**Current integration status:** the gateway currently uses a simulated Refugee ID provider path and does not make a live UNHCR request. The conversion helper exists, but do not describe the resulting response as a live UNHCR verification.
 
 ### Important Biometric Handling Rules
 
@@ -178,6 +180,10 @@ Verifies a subscriber against the relevant identity registry (NIRA, UNHCR, URSB,
 
 **Important:** A failure to match is **not** an HTTP error. It is HTTP 200 with `verified: false` and `reason_code: IDENTITY_REJECTED`. Branch on `data.verified` and `data.reason_code`, never on the HTTP status alone.
 
+Every response includes `X-Response-Time-Ms`, the gateway's server-side
+processing duration in milliseconds. Use curl's `time_total` separately to
+measure end-to-end latency including the network.
+
 #### Request — NATIONAL ID (NIRA)
 
 The middleware executes the full three-step NIRA flow internally (token → certificate → signed auth). You supply only identity and biometric blocks — no NIRA credentials, certificates, or cryptography are required from you.
@@ -231,7 +237,7 @@ The middleware executes the full three-step NIRA flow internally (token → cert
 | `last_name` | string | Yes | Last name (e.g., `LADU`) |
 | `biometric` | object | Yes | Fingerprint image object |
 | `biometric.biometric_type` | string | Yes | `"FINGERPRINT"` |
-| `biometric.format` | string | Yes | `"WSQ"`, `"JPEG"`, `"ISO_19794_4"`, or `"ISO_19794_6"` |
+| `biometric.format` | string | Yes | `"JPEG"` or `"WSQ"` (`WSQ` is converted to JPEG) |
 | `biometric.data` | string | Yes | Base64-encoded fingerprint image data |
 
 #### Request Example — REFUGEE ID (WSQ)
@@ -281,7 +287,8 @@ Returns `verified: false` with `reason_code: VERIFICATION_UNAVAILABLE`. A `verif
 }
 ```
 
-**Response Header:** `X-Verification-Reference: vrf_FSMUJHVL3Z7QEMIZ`
+The response includes `X-Response-Time-Ms` for gateway processing duration.
+The `verification_reference` is in the JSON response body.
 
 #### Response — Verified (REFUGEE ID)
 
@@ -1043,7 +1050,8 @@ X-API-Key: your-key
   }
 }
 ```
-→ Response header: `X-Verification-Reference: vrf_FSMUJHVL3Z7QEMIZ`
+→ Response header: `X-Response-Time-Ms: <gateway duration in milliseconds>`
+→ Response body: `data.verification_reference`
 → Body: `{"verified": true, "reason_code": "IDENTITY_ACCEPTED", ...}`
 
 **Step 3 — Registration:**

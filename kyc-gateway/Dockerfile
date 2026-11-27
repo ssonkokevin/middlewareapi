@@ -6,11 +6,13 @@ WORKDIR /app
 # Prevent .pyc files and ensure logs flush immediately
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    TZ=Africa/Kampala
 
-# curl is required for the HEALTHCHECK command below
+# curl is required for the HEALTHCHECK command below; tzdata for EAT timezone
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies first (cached layer — only rebuilds when requirements change)

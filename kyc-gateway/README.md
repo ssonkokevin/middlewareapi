@@ -54,14 +54,15 @@ returns the UCC response to the vendor.
    - For `id_type: "NATIONAL ID"`: send `first_name`, `last_name`,
      `date_of_birth` in the format expected by NIRA (for example
      `11/06/1970`), `transaction_id`, and the complete unmodified
-     `MOSIP_SBI_SIGNED` blocks. The middleware reuses a valid cached JWT when
-     available, fetches a fresh NIRA certificate for each AUTH, and returns a
-     `verification_reference` in the response body. You do **not** handle NIRA
+     `MOSIP_SBI_SIGNED` blocks. For each verification, the middleware requests
+     a NIRA token, fetches a fresh NIRA certificate, submits AUTH, and returns
+     a `verification_reference` in the response body. You do **not** handle NIRA
      certificates, partner keys, or cryptography.
-   - For `id_type: "REFUGEE ID"`: send `first_name` and `last_name` (required
-     by UCC). Biometric `format` accepts `ISO_19794_4`, `ISO_19794_6`, `JPEG`,
-     or `WSQ`. WSQ data is auto-converted to JPEG by the gateway before
-     forwarding to UCC — send whatever you have and let the gateway handle it.
+   - For `id_type: "REFUGEE ID"`: UCC v0.4.0 requires a JPEG fingerprint image.
+     Send `first_name`, `last_name`, and Base64 image data. `JPEG` is passed
+     through; `WSQ` is converted to JPEG by the gateway. ISO 19794 formats and
+     other formats are not supported. The current Refugee provider path is
+     simulated and is not connected to a live UNHCR service.
    - For all other id_types: simulated provider decision.
 3. Submit the returned `verification_reference` in the individual, corporate,
    batch, ownership-change, or full-update request. The reference is bound to
@@ -75,7 +76,7 @@ returns the UCC response to the vendor.
 | `id_type` | Provider | Flow |
 |---|---|---|
 | `NATIONAL ID` | NIRA | Middleware executes 3-step NIRA auth internally; returns `verification_reference` in response body |
-| `REFUGEE ID` | UNHCR | Middleware forwards identity + biometric; returns `verification_reference` in body |
+| `REFUGEE ID` | UNHCR | Simulated provider result in the current gateway; no live UNHCR request |
 | `PASSPORT` | NCIC | Not yet integrated (`VERIFICATION_UNAVAILABLE`) |
 
 ## Biometric Format Conversion (WSQ → JPEG)
@@ -88,7 +89,8 @@ change is required.
 
 If your data is already JPEG, send `"format": "JPEG"` directly — no conversion
 step runs for non-WSQ payloads. Supported `format` values for `REFUGEE ID`:
-`ISO_19794_4`, `ISO_19794_6`, `JPEG`, `WSQ`.
+`JPEG` or `WSQ` (WSQ is converted to JPEG). Refugee verification is currently
+simulated; no live UNHCR request is made by this gateway.
 
 ## Environment Variables
 
@@ -96,8 +98,8 @@ Copy `.env.example` to `.env` and configure:
 
 | Variable | Required | Description | Example |
 |---|---|---|---|
-| `UCC_BASE_URL` | ✅ | Private UCC upstream URL (vendors use `PUBLIC_BASE_URL`) | `https://192.168.5.18` |
-| `UCC_API_KEY` | ✅ | Middleware's key for authenticating to UCC upstream | `9feb2e05b...c60bd` |
+| `UCC_BASE_URL` | ✅ | Gateway operator's upstream routing target (vendors use `PUBLIC_BASE_URL`) | Configured by operator |
+| `UCC_API_KEY` | ✅ | Middleware-only credential for upstream authentication; never supplied to vendors | Configured by operator |
 | `UCC_FORWARDING_ENABLED` | — | Forward vendor requests to UCC (`true`) or simulate locally (`false`) | `true` |
 | `UCC_TLS_VERIFY` | — | Validate UCC TLS certificate | `false` |
 | `KYC_API_KEYS` | ✅ | Comma-separated vendor API keys (validated locally) | `dev-local-key` |
@@ -156,6 +158,7 @@ is fetched for each AUTH request.
 Ensure the middleware server owns `10.33.33.30`, TCP/8001 is permitted by the
 firewall, and the vendor server can route to it. The intended private route is
 vendor application -> `10.33.33.30:8001` -> middleware -> UCC
-`https://192.168.5.18` (port 443). Use a TLS-terminating reverse proxy and
-an HTTPS DNS name before exposing the gateway beyond the trusted internal
-network, because API keys must not travel over an untrusted plain-HTTP path.
+the UCC upstream service. Vendors should connect only to `PUBLIC_BASE_URL`.
+Use a TLS-terminating reverse proxy and an HTTPS DNS name before exposing the
+gateway beyond the trusted internal network, because API keys must not travel
+over an untrusted plain-HTTP path.
