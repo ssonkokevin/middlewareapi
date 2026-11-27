@@ -21,15 +21,15 @@ Routes:
   GET    /health                                        — Service health check
   GET    /docs                                          — Swagger UI
 
-NOTE: UCC forwarding is enabled for business operations. NATIONAL ID
-/identity_verification requests are handled locally and orchestrate NIRA's
-token → certificate → AUTH flow. Other forwarded requests authenticate to UCC
-with UCC_API_KEY, after the vendor's key is validated locally.
+NOTE: UCC forwarding is enabled for all business operations including
+/identity_verification. UCC returns the verification_reference in its
+response; the middleware does not generate references locally. UCC calls the
+/nira/* proxy endpoints (token → certificate → auth) through the middleware
+for NATIONAL ID crypto, which the middleware executes using its own NIRA
+credentials — GDE never sees them.
 
 Direct `/nira/*` proxy calls preserve the NIRA Authorization response header.
-The integrated `/identity_verification` flow returns its locally stored
-verification reference in the response body. CORS exposes the direct proxy
-headers to browser-based clients.
+CORS exposes the direct proxy headers to browser-based clients.
 
 Every endpoint requires an API key in the `X-API-Key` header (see
 app/api/deps/auth.py).
@@ -60,6 +60,7 @@ logger = logging.getLogger("kyc_gateway")
 
 _UCC_PROXY_PATHS = (
     "/ownership_check",
+    "/identity_verification",
     "/individual_registrations",
     "/corporate_registrations",
     "/compliance_report",
